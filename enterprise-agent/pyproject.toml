@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "enterprise-agent"
+version = "0.3.0"
+description = "Self-hosted enterprise agent powered by DeepSeek and Microsoft Agent Framework"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "agent-framework-openai==1.14.3",
+  "fastapi>=0.116,<1",
+  "mcp>=1.30,<2",
+  "msal>=1.38,<2",
+  "PyJWT[crypto]>=2.10,<3",
+  "pydantic-settings>=2.10,<3",
+  "python-dotenv>=1.1,<2",
+  "python-docx>=1.2,<2",
+  "pypdf>=6.0,<7",
+  "PyYAML>=6.0,<7",
+  "reportlab>=4.4,<5",
+  "uvicorn[standard]>=0.35,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx>=0.28,<1",
+  "httpx2>=2.12,<3",
+  "openai>=3.13,<4",
+  "pytest>=8.4,<10",
+  "pytest-asyncio>=1.1,<2",
+  "pytest-cov>=6.2,<8",
+  "ruff>=0.12,<1",
+]
+
+[project.scripts]
+enterprise-agent = "enterprise_agent.main:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/enterprise_agent"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-markers"
+testpaths = ["tests", "evals"]
+markers = [
+  "live: calls the configured external DeepSeek API",
+  "artifact_tool: requires the bundled JavaScript artifact-tool runtime",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]

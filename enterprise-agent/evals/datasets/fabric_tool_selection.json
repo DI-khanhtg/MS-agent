@@ -1,0 +1,14 @@
+[
+  {"id":"fabric-budget-actual","prompt":"Compare Project X budget to actual spend this quarter.","expected_tools":["fabric_query"],"forbidden_tools":["workiq_fetch"]},
+  {"id":"fabric-revenue","prompt":"What was revenue by region last month?","expected_tools":["fabric_query"],"forbidden_tools":["workiq_fetch"]},
+  {"id":"fabric-utilization","prompt":"Show consultant utilization versus target for Q3.","expected_tools":["fabric_query"],"forbidden_tools":["workiq_fetch"]},
+  {"id":"fabric-kpi","prompt":"Retrieve the latest operating KPI values.","expected_tools":["fabric_query"],"forbidden_tools":["workiq_fetch"]},
+  {"id":"fabric-cost-trend","prompt":"Analyze the six-month delivery cost trend for Project X.","expected_tools":["fabric_query"],"forbidden_tools":["workiq_fetch"]},
+  {"id":"fabric-margin","prompt":"Calculate gross margin by business unit from governed business data.","expected_tools":["fabric_query"],"forbidden_tools":["workiq_fetch"]},
+  {"id":"no-fabric-email","prompt":"Find my latest email about Project X.","expected_tools":["workiq_fetch"],"forbidden_tools":["fabric_query"]},
+  {"id":"no-fabric-calendar","prompt":"What is my first calendar event tomorrow?","expected_tools":["workiq_fetch"],"forbidden_tools":["fabric_query"]},
+  {"id":"no-fabric-teams","prompt":"Find recent Teams messages from my manager.","expected_tools":["workiq_fetch"],"forbidden_tools":["fabric_query"]},
+  {"id":"no-fabric-files","prompt":"Find the latest Project X status document in SharePoint.","expected_tools":["workiq_fetch"],"forbidden_tools":["fabric_query"]},
+  {"id":"no-fabric-people","prompt":"Look up the people working with me recently.","expected_tools":["workiq_fetch"],"forbidden_tools":["fabric_query"]},
+  {"id":"no-enterprise-rewrite","prompt":"Rewrite this sentence: budget reviews are useful.","expected_tools":[],"forbidden_tools":["fabric_query","workiq_fetch"]}
+]

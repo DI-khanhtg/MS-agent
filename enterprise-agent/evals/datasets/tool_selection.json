@@ -1,0 +1,28 @@
+[
+  {"id":"no-tool-greeting","prompt":"Hello! What can you help me with?","expected_tools":[],"forbidden_tools":["get_current_user","get_project_status","search_mock_documents","get_mock_calendar"]},
+  {"id":"no-tool-rewrite","prompt":"Rewrite this sentence more concisely: We need to meet in order to discuss the plan.","expected_tools":[],"forbidden_tools":["get_current_user","get_project_status","search_mock_documents","get_mock_calendar"]},
+  {"id":"no-tool-concept","prompt":"Explain the difference between a goal and a task in general terms.","expected_tools":[],"forbidden_tools":["get_current_user","get_project_status","search_mock_documents","get_mock_calendar"]},
+  {"id":"no-tool-format","prompt":"Return the words red, green, blue as a numbered list.","expected_tools":[],"forbidden_tools":["get_current_user","get_project_status","search_mock_documents","get_mock_calendar"]},
+  {"id":"user-name","prompt":"What is the signed-in user's name?","expected_tools":["get_current_user"],"forbidden_tools":["get_project_status","search_mock_documents","get_mock_calendar"]},
+  {"id":"user-timezone","prompt":"Which timezone is the current user in?","expected_tools":["get_current_user"],"forbidden_tools":["get_project_status","search_mock_documents","get_mock_calendar"]},
+  {"id":"user-role","prompt":"Look up the current user's job role.","expected_tools":["get_current_user"],"forbidden_tools":["get_project_status","search_mock_documents","get_mock_calendar"]},
+  {"id":"alpha-status","prompt":"What is the current status of Project Alpha?","expected_tools":["get_project_status"],"forbidden_tools":["get_current_user","search_mock_documents","get_mock_calendar"]},
+  {"id":"beta-actions","prompt":"List the open actions for Project Beta.","expected_tools":["get_project_status"],"forbidden_tools":["get_current_user","search_mock_documents","get_mock_calendar"]},
+  {"id":"alpha-progress","prompt":"How far along is Project Alpha according to the project system?","expected_tools":["get_project_status"],"forbidden_tools":["get_current_user","search_mock_documents","get_mock_calendar"]},
+  {"id":"alpha-requirements","prompt":"Find mock documents about Project Alpha requirements.","expected_tools":["search_mock_documents"],"forbidden_tools":["get_current_user","get_project_status","get_mock_calendar"]},
+  {"id":"alpha-risks","prompt":"Search the enterprise documents for Alpha risks.","expected_tools":["search_mock_documents"],"forbidden_tools":["get_current_user","get_project_status","get_mock_calendar"]},
+  {"id":"beta-brief","prompt":"Find the discovery brief for Project Beta.","expected_tools":["search_mock_documents"],"forbidden_tools":["get_current_user","get_project_status","get_mock_calendar"]},
+  {"id":"calendar-all","prompt":"What meetings are on my mock calendar?","expected_tools":["get_mock_calendar"],"forbidden_tools":["get_current_user","get_project_status","search_mock_documents"]},
+  {"id":"calendar-date","prompt":"What is on my calendar on 2026-09-13?","expected_tools":["get_mock_calendar"],"forbidden_tools":["get_current_user","get_project_status","search_mock_documents"]},
+  {"id":"calendar-empty-date","prompt":"Check my calendar for 2026-09-20.","expected_tools":["get_mock_calendar"],"forbidden_tools":["get_current_user","get_project_status","search_mock_documents"]},
+  {"id":"alpha-status-docs","prompt":"Summarize Project Alpha's current status and relevant requirement documents.","expected_tools":["get_project_status","search_mock_documents"],"forbidden_tools":["get_current_user","get_mock_calendar"]},
+  {"id":"beta-status-docs","prompt":"Combine Project Beta status with its discovery documents.","expected_tools":["get_project_status","search_mock_documents"],"forbidden_tools":["get_current_user","get_mock_calendar"]},
+  {"id":"alpha-meeting-prep","prompt":"Prepare me for the Project Alpha meeting on 2026-09-13 using the calendar, project status, and documents.","expected_tools":["get_mock_calendar","get_project_status","search_mock_documents"],"forbidden_tools":["get_current_user"]},
+  {"id":"user-alpha-context","prompt":"Tell me the current user's role and the status of Project Alpha.","expected_tools":["get_current_user","get_project_status"],"forbidden_tools":["search_mock_documents","get_mock_calendar"]},
+  {"id":"calendar-alpha-status","prompt":"Check the 2026-09-13 calendar and give me Project Alpha's latest status.","expected_tools":["get_mock_calendar","get_project_status"],"forbidden_tools":["get_current_user","search_mock_documents"]},
+  {"id":"calendar-beta-docs","prompt":"Check the 2026-09-14 meeting and find relevant Project Beta documents.","expected_tools":["get_mock_calendar","search_mock_documents"],"forbidden_tools":["get_current_user","get_project_status"]},
+  {"id":"compare-projects","prompt":"Compare the current status and open actions of Project Alpha and Project Beta.","expected_tools":["get_project_status"],"forbidden_tools":["get_current_user","search_mock_documents","get_mock_calendar"]},
+  {"id":"unknown-project","prompt":"Check the authoritative status of Project Gamma; do not invent it if unavailable.","expected_tools":["get_project_status"],"forbidden_tools":["get_current_user","search_mock_documents","get_mock_calendar"]},
+  {"id":"tool-failure","prompt":"Get project status for project ID simulate-failure. If the tool fails, state that it could not be verified.","expected_tools":["get_project_status"],"forbidden_tools":["get_current_user","search_mock_documents","get_mock_calendar"]}
+]
+

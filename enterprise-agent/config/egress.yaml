@@ -1,0 +1,36 @@
+version: 1
+
+limits:
+  max_payload_bytes: 50000
+  max_list_items: 25
+  max_string_chars: 4000
+  max_depth: 10
+
+redaction:
+  replacement: "[REDACTED]"
+  redact_email_addresses: true
+  redact_phone_numbers: true
+  sensitive_key_patterns:
+    - password
+    - passwd
+    - secret
+    - client_secret
+    - api_key
+    - access_token
+    - refresh_token
+    - authorization
+    - cookie
+    - private_key
+  secret_value_patterns:
+    - "(?i)bearer\\s+[a-z0-9._~+/=-]{16,}"
+    - "eyJ[a-zA-Z0-9_-]{10,}\\.[a-zA-Z0-9_-]{10,}\\.[a-zA-Z0-9_-]{10,}"
+    - "-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"
+  pii_value_patterns:
+    - "(?i)\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b"
+    - "(?<!\\d)(?:\\+?\\d[\\d .()-]{7,}\\d)(?!\\d)"
+
+blocking:
+  prohibited_classifications:
+    - credential
+    - secret
+
