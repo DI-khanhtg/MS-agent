@@ -1,0 +1,26 @@
+approval_expiry_minutes: 30
+
+enabled_actions:
+  - send_email
+  - create_calendar_event
+  - post_teams_message
+  - update_entity
+
+blocked_operations:
+  - delete_entity
+
+# Updates are intentionally narrow. Add fields only after security review.
+allowed_update_paths:
+  /me/messages/:
+    - subject
+    - body
+    - importance
+    - categories
+  /me/events/:
+    - subject
+    - body
+    - start
+    - end
+    - location
+    - attendees
+

@@ -1,0 +1,40 @@
+groups:
+  mock_read:
+    enabled: true
+    read_only: true
+    tools:
+      - get_current_user
+      - get_project_status
+      - search_mock_documents
+      - get_mock_calendar
+  workiq_read:
+    enabled: true
+    read_only: true
+    tools:
+      - workiq_fetch
+      - workiq_get_schema
+      - workiq_search_paths
+  artifact_generation:
+    enabled: true
+    read_only: false
+    enterprise_side_effects: false
+    tools:
+      - create_artifact
+  fabric_read:
+    enabled: true
+    read_only: true
+    tools:
+      - fabric_query
+  workiq_write:
+    enabled: true
+    read_only: false
+    approval_required: true
+    tools:
+      - draft_action
+      - request_action_approval
+      - get_action_status
+    # Approval and execution are backend API operations, never model-callable tools.
+    blocked_tools:
+      - approve_action
+      - execute_action
+      - delete_entity

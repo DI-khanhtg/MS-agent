@@ -1,0 +1,12 @@
+default_template: data_impact
+
+templates:
+  data_impact:
+    company_name: Data Impact
+    primary_color: "#164E63"
+    accent_color: "#0EA5E9"
+    font_family: Calibri
+    # Optional path relative to templates/artifacts. API callers can select only this ID,
+    # never an arbitrary filesystem path.
+    docx_template:
+

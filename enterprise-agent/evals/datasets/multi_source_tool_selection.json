@@ -1,0 +1,12 @@
+[
+  {"id":"mixed-status","prompt":"Read recent Project X communications, compare them to budget and utilization actuals, then summarize status.","expected_tools":["workiq_fetch","fabric_query"],"forbidden_tools":[]},
+  {"id":"mixed-status-docx","prompt":"Use recent Project X email and files plus budget-versus-actual data to create a grounded Word status report.","expected_tools":["workiq_fetch","fabric_query","create_artifact"],"forbidden_tools":[]},
+  {"id":"mixed-customer-revenue","prompt":"Compare recent customer concerns in email and Teams with this quarter's revenue trend.","expected_tools":["workiq_fetch","fabric_query"],"forbidden_tools":[]},
+  {"id":"mixed-meeting-kpi","prompt":"Prepare me for tomorrow's project meeting using related messages and current delivery KPIs.","expected_tools":["workiq_fetch","fabric_query"],"forbidden_tools":[]},
+  {"id":"mixed-risk-cost","prompt":"Find Project X risks in recent documents and assess them against the six-month cost trend.","expected_tools":["workiq_fetch","fabric_query"],"forbidden_tools":[]},
+  {"id":"mixed-actions-utilization","prompt":"Find open staffing actions and compare them with utilization versus target.","expected_tools":["workiq_fetch","fabric_query"],"forbidden_tools":[]},
+  {"id":"mixed-forecast-evidence","prompt":"Reconcile the latest forecast discussion with historical project actuals and label each source.","expected_tools":["workiq_fetch","fabric_query"],"forbidden_tools":[]},
+  {"id":"mixed-executive-report","prompt":"Create a Word executive brief from Project X communications, decisions, budget actuals, and operational KPIs.","expected_tools":["workiq_fetch","fabric_query","create_artifact"],"forbidden_tools":[]},
+  {"id":"mixed-commitments-margin","prompt":"Compare commitments made in customer communications with actual margin by month.","expected_tools":["workiq_fetch","fabric_query"],"forbidden_tools":[]},
+  {"id":"mixed-schedule-spend","prompt":"Use the latest project schedule file and actual spend to identify delivery variance.","expected_tools":["workiq_fetch","fabric_query"],"forbidden_tools":[]}
+]

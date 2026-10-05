@@ -1,0 +1,17 @@
+[
+  {"id":"workiq-email-latest","prompt":"Find my latest email about Project Alpha.","expected_tools":["workiq_fetch"],"forbidden_tools":[]},
+  {"id":"workiq-email-sender","prompt":"Find the most recent messages from my manager.","expected_tools":["workiq_fetch"],"forbidden_tools":[]},
+  {"id":"workiq-calendar","prompt":"What meetings are on my Microsoft 365 calendar today?","expected_tools":["workiq_fetch"],"forbidden_tools":[]},
+  {"id":"workiq-calendar-prep","prompt":"Retrieve tomorrow's first meeting so I can prepare for it.","expected_tools":["workiq_fetch"],"forbidden_tools":[]},
+  {"id":"workiq-onedrive","prompt":"Find the newest document in my OneDrive.","expected_tools":["workiq_fetch"],"forbidden_tools":[]},
+  {"id":"workiq-sharepoint","prompt":"Retrieve recent files from the SharePoint site path I provide.","expected_tools":["workiq_fetch"],"forbidden_tools":[]},
+  {"id":"workiq-teams","prompt":"Retrieve my recent Microsoft Teams chats.","expected_tools":["workiq_fetch"],"forbidden_tools":[]},
+  {"id":"workiq-people","prompt":"Look up people relevant to my recent work in Microsoft 365.","expected_tools":["workiq_fetch"],"forbidden_tools":[]},
+  {"id":"workiq-cross-source","prompt":"Combine my next calendar event with the most recent related email.","expected_tools":["workiq_fetch"],"forbidden_tools":[]},
+  {"id":"workiq-no-tool","prompt":"Rewrite this sentence concisely: We should schedule a meeting to discuss the plan.","expected_tools":[],"forbidden_tools":["workiq_fetch","workiq_get_schema","workiq_search_paths"]},
+  {"id":"mvp-project-summary","prompt":"Summarize Project X using its recent files, messages, decisions, risks, and open actions.","expected_tools":["workiq_fetch"],"forbidden_tools":[]},
+  {"id":"mvp-meeting-prep","prompt":"Prepare me for tomorrow's first meeting using the agenda and related recent communications.","expected_tools":["workiq_fetch"],"forbidden_tools":[]},
+  {"id":"mvp-customer-discussions","prompt":"Find and summarize recent customer discussions across my Microsoft 365 work data.","expected_tools":["workiq_fetch"],"forbidden_tools":[]},
+  {"id":"mvp-requirements","prompt":"Extract requirements and unresolved acceptance criteria from the latest Project X materials.","expected_tools":["workiq_fetch"],"forbidden_tools":[]},
+  {"id":"mvp-open-actions","prompt":"Find open Project X actions, their owners, due dates, and supporting sources.","expected_tools":["workiq_fetch"],"forbidden_tools":[]}
+]
