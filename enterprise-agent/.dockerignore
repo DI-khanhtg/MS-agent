@@ -8,5 +8,9 @@ data/*.db*
 data/*.jsonl*
 data/backups
 data/artifacts
+data/*.png
+data/documents/*
+!data/documents/Project-X/
+!data/documents/Project-X/**
 output
 tmp

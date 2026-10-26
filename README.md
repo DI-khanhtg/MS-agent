@@ -1,61 +1,51 @@
-# IQ Samples
+# Enterprise Agent
 
-End-to-end samples showcasing **Foundry IQ**, **Fabric IQ**, **Work IQ**, and **Web IQ** integrations in AI agents.
+Ứng dụng chat chạy trên máy của bạn: dùng Gemini để tổng hợp tài liệu, đọc Microsoft 365 qua Work IQ theo quyền tài khoản đã đăng nhập, và tạo Word, PDF, Excel, PowerPoint, Markdown hoặc JSON.
 
-> 📚 **New to the IQs?** Start with **[The Microsoft IQ Series](https://github.com/microsoft/iq-series)** — a guided learning series that explains Foundry IQ, Fabric IQ, Work IQ, and Web IQ from the ground up. Then come back here to build with them.
->
-> 💬 **Questions or stuck?** Ask in the **[IQ Discussions](https://aka.ms/iq/discussions)** — we (and the community) are there to help.
+Mỗi người clone repository, chạy **backend local riêng** và cấu hình **key/app của mình một lần**. Những lần sau chỉ cần chạy ứng dụng rồi đăng nhập Microsoft. Tài khoản cơ quan/trường học ở các tổ chức khác nhau dùng cấu hình tenant của tổ chức mình. Xem [hướng dẫn thiết lập đầy đủ](enterprise-agent/docs/SELF_HOST_SETUP.md) cho bước quản trị Microsoft Entra.
 
-## Samples
+## Bắt đầu
 
-| Sample | Description | Stack |
-|--------|-------------|-------|
-| [Refund Agent (A365)](./refund-agent-a365/) | A365 agent wrapping an Microsoft Foundry agent with Fabric Data Agent, Foundry IQ knowledge, and Work IQ (Teams/email) — deployed to Microsoft Teams | Python 3.11+, A365 SDK, React/Vite dashboard |
-| [Travel Agent (Hosted, Foundry IQ + Work IQ)](./travel-agent-hosted/) | A hosted Microsoft Foundry agent (Agent Framework SDK) grounded with Foundry IQ travel policies and Work IQ Mail — answers with both standing policy and recent email overrides, with an evaluation suite | Python 3.12, Agent Framework SDK, pytest-agent-evals |
+Cài [Git](https://git-scm.com/downloads) và [uv](https://docs.astral.sh/uv/getting-started/installation/). uv tự tải Python phù hợp khi cần; không cần cài Node.js cho giao diện và các định dạng tài liệu mặc định. Xem [cách uv quản lý Python](https://docs.astral.sh/uv/guides/install-python/).
 
-## 🧪 Hands-on Lab
+```powershell
+git clone --branch feat/gemini-microsoft-documents https://github.com/DI-khanhtg/MS-agent.git
+cd MS-agent/enterprise-agent
+uv run enterprise-agent setup
+uv run enterprise-agent doctor
+uv run enterprise-agent start --open
+```
 
-Want a guided, self-paced walkthrough? **[Build Lab 532 — From Data to Context: Agent-Ready Knowledge with Foundry IQ](https://github.com/microsoft/Build26-LAB532)** takes you from raw data to a grounded, agent-ready knowledge base step by step.
+Hiện Enterprise Agent nằm ở nhánh `feat/gemini-microsoft-documents`; `main` vẫn là bản IQ samples cũ. Giữ tùy chọn `--branch` ở trên cho đến khi nhánh được merge. Nếu đã clone, từ thư mục repository chạy `git fetch origin`, `git switch feat/gemini-microsoft-documents`, rồi `git pull --ff-only` trước khi vào `enterprise-agent`.
 
-- 🧑‍🏫 **[Lab repo](https://github.com/microsoft/Build26-LAB532)** — the full hands-on lab
-- 🛠️ **[Self-deployment guide](https://github.com/microsoft/Build26-LAB532-from-data-to-context-agent-ready-knowledge-with-foundry-iq/blob/main/deploy_yourself.md)** — deploy and run it yourself, at your own pace
+Lệnh `setup` hỏi Gemini API key, tenant ID, backend app ID/client secret và frontend SPA app ID. Key và secret được nhập ẩn, lưu trong `.env` được Git bỏ qua; wizard không ghi đè `.env` đã có. Chuẩn bị các giá trị theo [hướng dẫn cấu hình một lần](enterprise-agent/docs/SELF_HOST_SETUP.md). `doctor` chỉ kiểm tra cấu hình offline; đăng nhập và truy vấn thực mới xác nhận được dịch vụ hoạt động.
 
-## Getting Started
+Trình duyệt mở **http://localhost:8000**. Chọn **Kết nối Microsoft → Đăng nhập Microsoft**, dùng tài khoản cơ quan/trường học thuộc tenant đã cấu hình. Nếu bạn không được tạo app hoặc cấp consent, nhờ quản trị viên tổ chức hỗ trợ theo hướng dẫn; mỗi người dùng key của mình.
 
-### Prerequisites
+Muốn xem giao diện trước khi có key hoặc cấu hình Microsoft:
 
-- **Azure subscription** with access to [Microsoft Foundry](https://ai.azure.com)
-- **Microsoft 365 tenant** enrolled in the [Frontier Preview Program](https://adoption.microsoft.com/copilot/frontier-program/)
-- **Azure CLI** (`az login`) and **A365 CLI** ([install guide](https://learn.microsoft.com/en-us/microsoft-agent-365/developer/install-cli))
-- **Python 3.11+** (for agent samples)
-- **Node.js 18+** (for dashboard frontends)
+```powershell
+uv run enterprise-agent demo --open
+```
 
-### Quick Start
+Demo dùng dữ liệu mẫu và kết quả mẫu xác định, không gọi Gemini hoặc Microsoft IQ. Xem [README ứng dụng](enterprise-agent/README.md) để biết cách dùng, dữ liệu lưu trên máy và giới hạn đọc tài liệu. Fabric, Speech và Foundry là các tích hợp tùy chọn.
 
-1. **Clone the repo:**
-   ```bash
-   git clone https://github.com/microsoft/iq-samples.git
-   cd iq-samples
-   ```
+## Các sample khác và nguồn gốc
 
-2. **Pick a sample** from the table above and navigate to its folder
+Repository này phát triển từ các IQ samples của Microsoft và bổ sung Enterprise Agent. Đây là repository tùy biến do chủ repository duy trì; tên sản phẩm và các liên kết nguồn không thể hiện Microsoft bảo trợ hay xác nhận bản tùy biến.
 
-3. **Follow the sample's README** — each sample has step-by-step setup instructions covering:
-   - Creating and configuring the Foundry agent with IQ tools
-   - Setting up Foundry IQ (knowledge/RAG), Work IQ (Teams/email), and Fabric IQ (data agent)
-   - A365 teammate provisioning and deployment
-   - Troubleshooting common errors
+| Sample | Mô tả |
+| --- | --- |
+| [Refund Agent (A365)](refund-agent-a365/) | Sample A365/Foundry với Fabric, Foundry IQ, Work IQ và dashboard React/Vite |
+| [Travel Agent (Hosted)](travel-agent-hosted/) | Sample hosted Foundry Agent Framework dùng chính sách du lịch, Work IQ Mail và evaluations |
 
-> **Tip:** Each sample also includes a `TROUBLESHOOTING.md` with solutions for all known errors. If you get stuck, check there first.
-
-## Learn More & Get Help
-
-- 📚 **[The Microsoft IQ Series](https://github.com/microsoft/iq-series)** — a guided learning series covering Foundry IQ, Fabric IQ, Work IQ, and Web IQ. The best place to understand the concepts before (or while) building these samples.
-- 🧪 **[Build Lab 532 — From Data to Context (Foundry IQ)](https://github.com/microsoft/Build26-LAB532)** — a hands-on lab with a [self-deployment guide](https://github.com/microsoft/Build26-LAB532-from-data-to-context-agent-ready-knowledge-with-foundry-iq/blob/main/deploy_yourself.md) you can run at your own pace.
-- 💬 **[IQ Discussions](https://aka.ms/iq/discussions)** — ask questions, share what you built, and get help from the team and community.
-- 🐛 **Issues** — found a bug in a sample? Open an issue in this repo.
+Tài liệu học từ Microsoft: [The Microsoft IQ Series](https://github.com/microsoft/iq-series), [Build Lab 532](https://github.com/microsoft/Build26-LAB532), [IQ Discussions](https://aka.ms/iq/discussions). Các sample có yêu cầu cài đặt riêng trong README tương ứng.
 
 ## Contributing
+
+For this fork, open an issue or pull request in this repository. The paragraphs below
+preserve the upstream Microsoft contribution and CLA procedures for attribution; they
+do not promise that Microsoft's CLA bot runs on this fork.
 
 This project welcomes contributions and suggestions. Most contributions require you to agree to a
 Contributor License Agreement (CLA) declaring that you have the right to, and actually do, grant us

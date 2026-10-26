@@ -1,5 +1,10 @@
 # Đăng nhập Microsoft khi chạy local
 
+Lần đầu clone repository, làm theo [Thiết lập backend local riêng](SELF_HOST_SETUP.md)
+để tạo hai app Entra của tổ chức, cấp consent và chạy wizard. Mỗi người dùng backend local
+và key riêng; người ở tổ chức khác cấu hình tenant của mình. Hướng dẫn bên dưới giải thích
+luồng đăng nhập và nhập tài liệu sau khi đã cấu hình xong.
+
 Ứng dụng dùng MSAL Browser với Authorization Code + PKCE. Bạn bấm **Kết nối Microsoft**,
 chọn **Đăng nhập Microsoft**, rồi đăng nhập bằng tài khoản cơ quan/trường học thuộc tenant
 đã cấu hình. Backend xác minh token trước khi dùng OBO để gọi Work IQ.
@@ -41,9 +46,9 @@ backend tự chọn ID đó. Các tenant/backend/client secret, Gemini key và A
 dùng cấu hình trong [Work IQ setup](WORKIQ_SETUP.md). Client secret chỉ ở backend.
 
 ```powershell
-cd C:\Users\Admin\Documents\MS-agent\enterprise-agent
-uv run python scripts/check_config.py
-uv run uvicorn enterprise_agent.api.app:app --reload --host 127.0.0.1 --port 8000
+cd MS-agent/enterprise-agent
+uv run enterprise-agent doctor
+uv run enterprise-agent start --open
 ```
 
 Mở **http://localhost:8000**, trùng origin của redirect URI. Dùng `127.0.0.1` trên trình

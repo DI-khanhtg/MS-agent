@@ -1,122 +1,93 @@
 # Enterprise Agent
 
-Start with [Local testing](docs/LOCAL_TESTING.md) for the zero-network demo, folder reads,
-voice setup, and all six artifact formats. See [Implementation status](docs/IMPLEMENTATION_STATUS.md)
-and [Operations](docs/OPERATIONS.md) for persistence, limits, backup, tracing, and deployment.
-Open `http://127.0.0.1:8000` after starting the backend to use the local web interface.
+Chat với Gemini, tìm thông tin Microsoft 365 qua Work IQ và tổng hợp tài liệu thành Word, PDF, Excel, PowerPoint, Markdown hoặc JSON. Giao diện và backend chạy trên máy của bạn; đăng nhập Microsoft dùng tài khoản cơ quan/trường học thuộc tenant bạn cấu hình.
 
-For **Sign in with Microsoft** and account-specific Windows folder imports, follow
-[Microsoft login for local development](docs/MICROSOFT_LOGIN.md). Use `http://localhost:8000`
-for that flow, matching the registered SPA callback. The UI manages tokens and OBO access.
+## Chạy lần đầu
 
-Use the chat paperclip to attach PDF, Word(DOCX), PowerPoint(PPTX), Excel(XLSX) or text
-documents. The same bounded reader handles local sources and Work IQ downloads. See
-[Document reading](docs/DOCUMENT_READING.md) for supported content, examples and OCR limits.
+Cài [Git](https://git-scm.com/downloads) và [uv](https://docs.astral.sh/uv/getting-started/installation/). uv [tự tải Python khi cần](https://docs.astral.sh/uv/guides/install-python/). Không cần Node.js cho giao diện hoặc bộ tạo tài liệu Python mặc định.
 
-Self-hosted Phase 0-12 implementation from the repository master plan. It provides a
-FastAPI API, Gemini Flash through Microsoft Agent Framework, read-only Work IQ and
-Fabric Data Agent MCP integrations, Microsoft Entra delegated authentication/OBO,
-multi-source reasoning, optional Foundry IQ retrieval, six artifact formats, voice input,
-durable state, a local web interface, and approval-gated Microsoft 365 actions.
-Live integrations and Azure deployment remain unverified until credentials are connected.
-
-## Prerequisites
-
-- Python 3.11+
-- [`uv`](https://docs.astral.sh/uv/)
-- Portable Python renderers generate XLSX/PPTX; the existing Node renderer is optional
-- A Gemini API key for live chat and live evaluations
-- A Microsoft Entra app and Work IQ tenant access for real Microsoft 365 queries
-- A published Fabric Data Agent on supported capacity for governed business queries
-
-## Setup
-
-The repository intentionally contains no `.env.example`. Edit the ignored `.env` file.
-For Gemini chat, create an API key in [Google AI Studio](https://aistudio.google.com/apikey)
-and configure:
-
-```dotenv
-RUNTIME_MODE=gemini
-GEMINI_API_KEY=PUT_YOUR_GEMINI_API_KEY_HERE
-GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
-GEMINI_MODEL=gemini-3.8-flash
-GEMINI_TIMEOUT_SECONDS=60
-GEMINI_MAX_RETRIES=2
+```powershell
+git clone --branch feat/gemini-microsoft-documents https://github.com/DI-khanhtg/MS-agent.git
+cd MS-agent/enterprise-agent
+uv run enterprise-agent setup
+uv run enterprise-agent doctor
+uv run enterprise-agent start --open
 ```
 
-Replace the placeholder key with your real key. `GEMINI_MODEL` can select another model
-available to your key. The client uses Google's
-[OpenAI-compatible Chat Completions API](https://ai.google.dev/gemini-api/docs/openai),
-including streaming and function calling. The OpenAI SDK is the transport library;
-requests go to Google. Gemini tool-call thought signatures are preserved in session history.
-Use `RUNTIME_MODE=demo` to test without API keys, then run:
+Nhánh này đang chứa Enterprise Agent; `main` vẫn là IQ samples cũ. Nếu đã clone, ở thư mục repository chạy `git fetch origin`, `git switch feat/gemini-microsoft-documents`, `git pull --ff-only`, rồi `cd enterprise-agent`.
+
+Trước khi chạy `setup`, chuẩn bị Gemini key và hai app Microsoft Entra theo [hướng dẫn thiết lập một lần](docs/SELF_HOST_SETUP.md). Wizard lần lượt hỏi key, model (mặc định `gemini-3.8-flash`), tenant ID, backend app ID, frontend SPA app ID và backend client secret. Key/secret được nhập ẩn. Wizard tạo `.env` được Git bỏ qua khi chưa có file; cấu hình đã có được giữ nguyên. Để thay đổi cấu hình sau này, sửa `.env` trên máy của bạn.
+
+Mỗi người có backend local và cấu hình riêng. Người ở tổ chức khác dùng app/tenant do tổ chức của họ cho phép; đăng nhập không tự cấp quyền vào dữ liệu hay tenant khác. Nếu không có quyền tạo app/cấp consent, gửi [hướng dẫn quản trị](docs/SELF_HOST_SETUP.md#2-cấu-hình-microsoft-entra-một-lần) cho quản trị viên của mình. Fabric, Speech và Foundry không phải điều kiện để bắt đầu.
+
+## Dùng hằng ngày
+
+Trong thư mục `enterprise-agent`:
+
+```powershell
+uv run enterprise-agent start --open
+```
+
+Lệnh kiểm tra cấu hình trước khi khởi động và mở **http://localhost:8000**, khớp callback Microsoft. `uv run enterprise-agent` cũng khởi động ứng dụng. Khi phát triển, dùng `uv run enterprise-agent start --reload`. Dừng bằng Ctrl+C.
+
+1. Chọn **Kết nối Microsoft → Đăng nhập Microsoft** và cho phép popup nếu được hỏi.
+2. Hỏi thông tin bạn được phép đọc, ví dụ: “Tìm email mới nhất về dự án X và tóm tắt các việc cần làm.”
+3. Dùng **kẹp giấy – Đính kèm tài liệu** hoặc **Chọn thư mục trên máy** để nhập tài liệu local, rồi yêu cầu tóm tắt hoặc tạo bản nháp.
+4. Tải kết quả trong **Tài liệu của bạn**. Kiểm tra nội dung, nguồn và các phần thiếu trước khi sử dụng.
+
+Token đăng nhập chỉ nằm trong bộ nhớ của trang. Refresh cần đăng nhập lại; phiên Microsoft SSO có thể giúp thao tác nhanh hơn. Lịch sử backend vẫn lưu theo tài khoản. Chi tiết: [Đăng nhập Microsoft](docs/MICROSOFT_LOGIN.md).
+
+## Thử trước khi có key
+
+```powershell
+uv run enterprise-agent demo --open
+```
+
+Demo không cần `.env` hay key, chỉ thay cấu hình của tiến trình đang chạy và giữ nguyên `.env` thật. Nó dùng dữ liệu mẫu và kết quả xác định, không gọi Gemini hoặc Microsoft IQ; auth, Speech, telemetry và kết nối database từ xa đều bị tắt. Demo lưu riêng tại `data/demo.db`, `data/artifacts/demo` và `data/demo-audit.jsonl`, tách khỏi lịch sử live ở `data/agent.db`. Chọn thư mục mẫu `Project-X` rồi **Tạo bản nháp**, hoặc thử các gợi ý chat. Demo không thay thế việc kiểm thử đăng nhập và dữ liệu thật. Xem [Local testing](docs/LOCAL_TESTING.md).
+
+## Dữ liệu và giới hạn
+
+Cấu hình setup dùng SQLite tại `data/agent.db` để giữ lịch sử/phiên/phê duyệt. Tài liệu nhập qua trình duyệt được sao chép vào vùng tài khoản ở `data/documents/_users`; bỏ chọn hoặc đăng xuất không xóa bản sao hay lịch sử đã lưu. `.env`, cơ sở dữ liệu và đầu ra runtime được Git bỏ qua. Không đưa các file này lên GitHub.
+
+Nguồn được agent đọc có thể gửi tới Gemini sau khi qua bộ lọc egress; xin phép tổ chức trước khi dùng dữ liệu công việc với dịch vụ bên ngoài. Gemini key và backend client secret nằm ở backend local. Microsoft 365 dùng quyền delegated của người đăng nhập qua OBO; quyền của bạn và chính sách tenant vẫn áp dụng.
+
+Hỗ trợ UTF-8 TXT/MD/CSV/JSON, DOCX, PPTX, PDF và XLSX. Nhập từ trình duyệt tối đa 2 MB/tệp; PDF tối đa 200 trang, PPTX tối đa 200 slide. Chưa có OCR hoặc phân tích ảnh/biểu đồ; `.doc`, `.ppt`, `.xls` cần chuyển sang định dạng mới. Xem [Đọc tài liệu](docs/DOCUMENT_READING.md) để biết giới hạn trích xuất và cách báo phần chưa đọc.
+
+## Kiểm tra và tài liệu kỹ thuật
+
+```powershell
+uv run enterprise-agent doctor
+```
+
+`doctor` kiểm tra cấu hình offline, không kiểm tra key thật, token, consent, billing hay quyền truy cập dịch vụ. `/health` là trạng thái cấu hình/liveness. Nếu đăng nhập được nhưng không đọc được Microsoft 365, kiểm tra [Work IQ setup](docs/WORKIQ_SETUP.md) và [xử lý lỗi đăng nhập](docs/MICROSOFT_LOGIN.md#kiểm-tra-và-xử-lý-lỗi).
+
+| Tài liệu | Nội dung |
+| --- | --- |
+| [Self-host setup](docs/SELF_HOST_SETUP.md) | App Entra, Gemini key, biến môi trường, Docker tùy chọn |
+| [Local testing](docs/LOCAL_TESTING.md) | Demo offline, kiểm thử và Speech tùy chọn |
+| [Work IQ](docs/WORKIQ_SETUP.md), [Fabric](docs/FABRIC_SETUP.md) | Consent, dữ liệu doanh nghiệp và kiểm thử live |
+| [Artifacts](docs/ARTIFACTS.md), [Actions](docs/ACTIONS.md) | Định dạng đầu ra và hành động cần phê duyệt |
+| [Operations](docs/OPERATIONS.md), [Security](docs/SECURITY.md) | Lưu trữ, sao lưu, hạn mức và ranh giới bảo mật |
+| [Implementation status](docs/IMPLEMENTATION_STATUS.md) | Phạm vi đã triển khai và phần cần xác minh live |
+
+Kiểm thử phát triển, chạy từ `enterprise-agent`:
 
 ```powershell
 uv sync --extra dev
-uv run uvicorn enterprise_agent.api.app:app --reload --host 127.0.0.1 --port 8000
-```
-
-The local setup supports folder reads and artifact generation. Unauthenticated demo use is
-available with `AUTH_ENABLED=false`. `RUNTIME_MODE=gemini` makes external API requests and requires
-a Gemini key. Previous `DEEPSEEK_*` settings are no longer read; deployments must use
-`GEMINI_*` and `RUNTIME_MODE=gemini`. `/health` reports `gemini_configured`.
-See [Work IQ setup](docs/WORKIQ_SETUP.md) and [Fabric setup](docs/FABRIC_SETUP.md) before
-enabling real enterprise data. See [Controlled actions](docs/ACTIONS.md) before enabling
-`workiq_write`.
-
-Health check:
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8000/health
-```
-
-Non-streaming chat:
-
-```powershell
-Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/chat `
-  -ContentType 'application/json' `
-  -Body '{"message":"What is the status of Project Alpha?"}'
-```
-
-When `AUTH_ENABLED=true`, add the API access token:
-
-```powershell
-$headers = @{ Authorization = "Bearer $accessToken" }
-Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/chat `
-  -Headers $headers `
-  -ContentType 'application/json' `
-  -Body '{"message":"Find my latest email about Project Alpha."}'
-```
-
-Streaming uses Server-Sent Events (SSE):
-
-```powershell
-curl.exe -N -X POST http://127.0.0.1:8000/api/chat/stream `
-  -H "Content-Type: application/json" `
-  -d '{"message":"Summarize Project Alpha and its requirements."}'
-```
-
-## Tests and evaluations
-
-Run deterministic unit/API tests and validate the evaluation dataset:
-
-```powershell
-uv run pytest -m "not live"
+uv run pytest -m "not live" -q
 uv run ruff check .
 ```
 
-After configuring a real key, run the Gemini tool-selection evaluation:
+Live integrations cần cấu hình và xác minh bằng tài khoản thực, có thể phát sinh chi phí. Hướng dẫn kiểm thử Work IQ/Fabric nằm trong các tài liệu tương ứng; chỉ đưa access token vào biến môi trường của tiến trình, không lưu vào `.env` hoặc Git.
+
+Đánh giá Gemini sau khi cấu hình key thật:
 
 ```powershell
 $env:RUN_LIVE_EVALS = "true"
 uv run pytest evals/test_tool_selection_live.py -m live -v
 ```
 
-The live suite evaluates every case in `evals/datasets/tool_selection.json` and requires
-the configured pass-rate threshold. It incurs Gemini API usage.
-
-After Entra and Work IQ are configured, validate email, calendar, files, Teams, and people
-using an API access token supplied only through the process environment:
+Kiểm thử Work IQ với access token dành cho backend API của người dùng đã đăng nhập:
 
 ```powershell
 $env:RUN_WORKIQ_LIVE_EVALS = "true"
@@ -125,61 +96,8 @@ uv run pytest tests/integration/test_workiq_live.py -m live -v
 uv run pytest evals/test_workiq_tool_selection_live.py -m live -v
 ```
 
-Never save `WORKIQ_USER_ACCESS_TOKEN` in `.env` or commit it.
-
-After publishing and configuring a Fabric Data Agent, validate the MCP adapter and routing:
-
-```powershell
-$env:RUN_FABRIC_LIVE_EVALS = "true"
-$env:FABRIC_USER_ACCESS_TOKEN = $accessToken
-uv run pytest tests/integration/test_fabric_live.py -m live -v
-uv run pytest evals/test_fabric_tool_selection_live.py -m live -v
-```
-
-For the combined Work IQ + Fabric + artifact routing evaluation, enable all three groups and
-set `RUN_MULTI_SOURCE_LIVE_EVALS=true`. Access tokens are process-only secrets.
-
-## API
-
-- `GET /` — local chat, folders, voice, downloads, history, and authenticated approval UI.
-- `GET /api/config` — sanitized capabilities for the current runtime.
-- `GET /api/metrics` — token/tool counters and optionally configured model cost estimate.
-- `GET /api/sessions`, `GET /api/sessions/{id}`, `DELETE /api/sessions/{id}` — owner history.
-- `POST /api/voice/transcribe` — bounded WAV input to the Azure Speech adapter.
-- `GET /health` — liveness and configuration status; it never exposes secrets.
-- `GET /api/me` — sanitized identity derived from the validated bearer token.
-- `POST /api/chat` — complete response with session ID and recorded tool calls.
-- `POST /api/chat/stream` — SSE events: `metadata`, `delta`, `done`, or `error`.
-- `POST /api/artifacts` — validate and create Markdown, JSON, DOCX, XLSX, PPTX, or PDF.
-- `GET /api/artifacts` — list artifacts owned by the verified tenant/user.
-- `GET /api/artifacts/{artifact_id}/download` — ownership-checked artifact download.
-- `POST /api/actions/drafts` — validate and create a local action draft.
-- `POST /api/actions/{action_id}/request-approval` — move a draft to pending approval.
-- `GET /api/actions` and `GET /api/actions/{action_id}` — owner-scoped action status.
-- `POST /api/approvals/{action_id}/approve` — authenticated approval and backend execution.
-- `POST /api/approvals/{action_id}/reject` — authenticated rejection without execution.
-
-Send a prior `session_id` to continue a conversation. The server namespaces it by verified
-tenant and user, so two users cannot share conversation state by guessing the same ID.
-Set `STORAGE_BACKEND=database` for durable SDK sessions, conversation history and approvals.
-SQLite is the local default; PostgreSQL is supported with the production extra.
-
-## Security defaults
-
-- Application-only Work IQ access is not implemented; every Work IQ call uses OBO for the
-  verified signed-in user.
-- Work IQ reads expose `fetch`, bounded `fetch_blob` document extraction, read-only
-  `get_schema`, and `search_paths`.
-- Fabric exposes one read-only `fabric_query` adapter and uses the signed-in user's access.
-- Resource paths are allowlisted and bounded; mutation tools and unsafe paths are rejected
-  before any network request.
-- User input, Work IQ output, and Fabric output pass through `config/egress.yaml` before
-  reaching Gemini.
-- The model can draft and request approval, but only an authenticated backend endpoint can
-  approve and execute. Delete is not implemented or exposed.
-- Credentials/secrets are blocked, configured PII is redacted, collections and strings are
-  truncated, and oversized payloads are rejected.
-- Egress audit logs contain metadata and hashed subject identifiers, not raw payloads.
-
-See [Security](docs/SECURITY.md) for the trust boundaries and production checklist.
-See [Artifact generation](docs/ARTIFACTS.md) for the schema, Word demo, templates, and renderers.
+Với Fabric đã được publish, dùng `RUN_FABRIC_LIVE_EVALS=true` và
+`FABRIC_USER_ACCESS_TOKEN` rồi chạy `tests/integration/test_fabric_live.py` và
+`evals/test_fabric_tool_selection_live.py` với `-m live -v`. Đánh giá nhiều nguồn còn cần
+`RUN_MULTI_SOURCE_LIVE_EVALS=true` và ba nhóm đọc Work IQ/Fabric/tạo artifact. Các test live
+không nằm trong kiểm tra `doctor` và không tự chạy trong lệnh khởi động.

@@ -1,16 +1,16 @@
 # Local testing without external connections
 
-For the offline demo, set `RUNTIME_MODE=demo` in the ignored `.env`, with
-`STORAGE_BACKEND=database`, `AUTH_ENABLED=false`, and
-`ENABLED_TOOL_GROUPS=mock_read,local_read,artifact_generation`.
-The local Gemini setup uses `RUNTIME_MODE=gemini` and requires `GEMINI_API_KEY`; see
-[Setup](../README.md#setup). Existing credential values are preserved. The demo runtime
-makes no Gemini or Microsoft IQ requests; voice input is a separate optional service.
+For the offline demo, use the command below. No `.env` or keys are needed; it overrides
+only the running process configuration and preserves the real `.env`. The demo
+makes no Gemini or Microsoft IQ requests and disables auth, Speech, telemetry, and remote
+database connections for that process. Demo state uses `data/demo.db`, generated files use
+`data/artifacts/demo`, and its audit log uses `data/demo-audit.jsonl`.
+For live Gemini and Microsoft sign-in, follow [Self-host setup](SELF_HOST_SETUP.md): each
+person configures their own local backend, keys and organization tenant once.
 
 ```powershell
-cd C:\Users\Admin\Documents\MS-agent\enterprise-agent
-uv sync --extra dev
-uv run uvicorn enterprise_agent.api.app:app --reload --host 127.0.0.1 --port 8000
+cd MS-agent/enterprise-agent
+uv run enterprise-agent demo --open
 ```
 
 Open <http://127.0.0.1:8000>. In the document panel, choose folder `Project-X`, select an
@@ -72,7 +72,7 @@ speech, barge-in and long dictation remain future features in the master plan.
    an authenticated user. No approval can be submitted by an LLM tool. Demo has no external
    write executor. The local suite covers approval with fake users/providers.
 
-`uv run python scripts/check_config.py` reports readiness without printing secrets or
+`uv run enterprise-agent doctor` reports readiness without printing secrets or
 calling any service. `/health` is a configuration/liveness check, not proof of live access.
 
 ## Validation
@@ -96,7 +96,8 @@ uv run --with playwright python scripts/smoke_ui.py
 This drives the local demo, downloads a DOCX, restores history, checks the disconnected
 voice state, and fails if the page attempts an external request. It does not install a browser.
 
-SQLite stores sessions/approvals in `data/agent.db`; artifacts use owner-isolated directories.
+Live setup stores sessions/approvals in `data/agent.db`; artifacts use owner-isolated directories.
+The `demo` command uses its separate storage paths described above.
 Those outputs and your documents are ignored by Git. The bundled Project-X sample remains
 versioned. Do not publish a dev instance with authentication disabled to other users.
 

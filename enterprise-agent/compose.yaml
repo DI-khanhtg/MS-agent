@@ -1,18 +1,24 @@
 services:
   agent:
     build: .
-    ports: ["127.0.0.1:8000:8000"]
+    ports: ["127.0.0.1:${APP_PORT:-8000}:${APP_PORT:-8000}"]
+    env_file:
+      - path: .env
+        required: false
+    command: ["enterprise-agent", "start"]
     environment:
-      APP_ENV: development
+      APP_ENV: ${APP_ENV:-development}
+      APP_HOST: 0.0.0.0
+      APP_PORT: ${APP_PORT:-8000}
       RUNTIME_MODE: ${RUNTIME_MODE:-demo}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       GEMINI_BASE_URL: ${GEMINI_BASE_URL:-https://generativelanguage.googleapis.com/v1beta/openai}
       GEMINI_MODEL: ${GEMINI_MODEL:-gemini-3.8-flash}
       GEMINI_TIMEOUT_SECONDS: ${GEMINI_TIMEOUT_SECONDS:-60}
       GEMINI_MAX_RETRIES: ${GEMINI_MAX_RETRIES:-2}
-      AUTH_ENABLED: "false"
+      AUTH_ENABLED: ${AUTH_ENABLED:-false}
       STORAGE_BACKEND: database
-      ENABLED_TOOL_GROUPS: local_read,artifact_generation
+      ENABLED_TOOL_GROUPS: ${ENABLED_TOOL_GROUPS:-local_read,artifact_generation}
       ALLOWED_HOSTS: localhost,127.0.0.1
     volumes: ["agent-data:/app/data"]
     restart: unless-stopped

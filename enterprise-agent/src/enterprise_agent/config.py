@@ -1,6 +1,7 @@
 """Typed application configuration loaded from the local .env file."""
 
 import json
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -288,7 +289,9 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    return Settings()
+    # The demo launcher disables .env only for its process (including reload children).
+    env_file = os.environ.get("ENTERPRISE_AGENT_ENV_FILE")
+    return Settings() if env_file is None else Settings(_env_file=env_file or None)
 
 
 def _csv_set(value: str) -> set[str]:
