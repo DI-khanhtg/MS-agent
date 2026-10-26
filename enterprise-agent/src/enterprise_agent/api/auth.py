@@ -1,12 +1,14 @@
 """FastAPI authentication dependency."""
 
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from enterprise_agent.api.schemas import PrincipalResponse
-from enterprise_agent.config import Settings
+from enterprise_agent.config import PLACEHOLDER_VALUES, Settings
 from enterprise_agent.security.identity import Principal
 from enterprise_agent.security.token_validation import AuthenticationError, TokenValidator
 
@@ -15,10 +17,57 @@ router = APIRouter(prefix="/api", tags=["authentication"])
 BearerCredentials = Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)]
 
 
+@router.get("/auth/config")
+async def browser_auth_configuration(request: Request) -> JSONResponse:
+    """Public PKCE bootstrap; backend credentials and tokens never leave the server."""
+    settings: Settings = request.app.state.settings
+    result = {
+        "enabled": settings.auth_enabled,
+        "configured": False,
+        "client_id": None,
+        "authority": None,
+        "redirect_uri": settings.entra_spa_redirect_uri,
+        "scopes": [],
+        "error": None,
+    }
+    if settings.auth_enabled:
+        try:
+            client_id = settings.entra_spa_client_id.strip()
+            if client_id in PLACEHOLDER_VALUES:
+                if len(settings.allowed_client_ids) != 1:
+                    raise ValueError("Set ENTRA_SPA_CLIENT_ID to one allowed frontend client ID")
+                client_id = next(iter(settings.allowed_client_ids))
+            if client_id not in settings.allowed_client_ids:
+                raise ValueError("ENTRA_SPA_CLIENT_ID must be in ENTRA_ALLOWED_CLIENT_IDS")
+            client_id = str(UUID(client_id))
+            tenant_id = str(UUID(settings.azure_tenant_id))
+            backend_id = str(UUID(settings.azure_client_id))
+            if (
+                tenant_id not in settings.allowed_tenant_ids
+                or backend_id not in settings.entra_api_audiences
+                or not settings.required_scopes
+            ):
+                raise ValueError("Configure the backend audience, allowed tenant and API scopes")
+            result.update(
+                configured=True,
+                client_id=client_id,
+                authority=f"https://login.microsoftonline.com/{tenant_id}",
+                scopes=sorted(f"api://{backend_id}/{scope}" for scope in settings.required_scopes),
+            )
+        except ValueError:
+            result["error"] = (
+                "Check ENTRA_SPA_CLIENT_ID, ENTRA_ALLOWED_CLIENT_IDS, "
+                "AZURE_TENANT_ID, AZURE_CLIENT_ID and the backend API scopes"
+            )
+    return JSONResponse(result, headers={"Cache-Control": "no-store"})
+
+
 async def get_principal(request: Request, credentials: BearerCredentials) -> Principal:
     settings: Settings = request.app.state.settings
     if not settings.auth_enabled:
-        return Principal.anonymous()
+        principal = Principal.anonymous()
+        await _limit(request, principal)
+        return principal
     if not settings.entra_is_configured:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -32,7 +81,9 @@ async def get_principal(request: Request, credentials: BearerCredentials) -> Pri
         )
     validator: TokenValidator = request.app.state.token_validator
     try:
-        return await validator.validate(credentials.credentials)
+        principal = await validator.validate(credentials.credentials)
+        await _limit(request, principal)
+        return principal
     except AuthenticationError as exc:
         http_status = (
             status.HTTP_403_FORBIDDEN
@@ -47,6 +98,18 @@ async def get_principal(request: Request, credentials: BearerCredentials) -> Pri
 
 
 PrincipalDependency = Annotated[Principal, Depends(get_principal)]
+
+
+async def _limit(request: Request, principal: Principal) -> None:
+    key = (
+        principal.isolation_key
+        if principal.authenticated
+        else (request.client.host if request.client else "anonymous")
+    )
+    if not await request.app.state.limiter.allow(key):
+        raise HTTPException(
+            429, "Request limit reached; retry in one minute", headers={"Retry-After": "60"}
+        )
 
 
 @router.get("/me", response_model=PrincipalResponse)

@@ -82,7 +82,9 @@ class MarkdownRenderer(ArtifactRenderer):
                 ]
             )
             for row in table.rows:
-                cells = [str(value if value is not None else "").replace("|", "\\|") for value in row]
+                cells = [
+                    str(value if value is not None else "").replace("|", "\\|") for value in row
+                ]
                 lines.append("| " + " | ".join(cells) + " |")
         if spec.sources:
             lines.extend(["", "## Sources"])
@@ -254,20 +256,22 @@ class PdfRenderer(ArtifactRenderer):
                 title=spec.title,
                 author=template.company_name,
             )
-            frame = Frame(document.leftMargin, document.bottomMargin, document.width, document.height)
+            frame = Frame(
+                document.leftMargin, document.bottomMargin, document.width, document.height
+            )
             document.addPageTemplates(
                 PageTemplate(
                     id="brief",
                     frames=[frame],
-                    onPage=lambda canvas, doc: _pdf_header_footer(
-                        canvas, doc, template, font_name
-                    ),
+                    onPage=lambda canvas, doc: _pdf_header_footer(canvas, doc, template, font_name),
                 )
             )
             styles = _pdf_styles(font_name, template)
             story: list[Any] = [Paragraph(escape(spec.title), styles["ArtifactTitle"])]
             if spec.subtitle:
-                story.extend([Paragraph(escape(spec.subtitle), styles["ArtifactSubtitle"]), Spacer(1, 8)])
+                story.extend(
+                    [Paragraph(escape(spec.subtitle), styles["ArtifactSubtitle"]), Spacer(1, 8)]
+                )
             for section in spec.sections:
                 block: list[Any] = [Paragraph(escape(section.heading), styles["ArtifactH2"])]
                 if section.body:
@@ -287,15 +291,28 @@ class PdfRenderer(ArtifactRenderer):
             for table_spec in spec.tables:
                 if table_spec.title:
                     story.append(Paragraph(escape(table_spec.title), styles["ArtifactH2"]))
-                data = [[Paragraph(escape(column), styles["ArtifactTableHeader"]) for column in table_spec.columns]]
+                data = [
+                    [
+                        Paragraph(escape(column), styles["ArtifactTableHeader"])
+                        for column in table_spec.columns
+                    ]
+                ]
                 for row in table_spec.rows:
                     data.append(
                         [
-                            Paragraph(_paragraph_html("" if value is None else str(value)), styles["ArtifactTableBody"])
+                            Paragraph(
+                                _paragraph_html("" if value is None else str(value)),
+                                styles["ArtifactTableBody"],
+                            )
                             for value in row
                         ]
                     )
-                table = Table(data, repeatRows=1, hAlign="LEFT", colWidths=[document.width / len(table_spec.columns)] * len(table_spec.columns))
+                table = Table(
+                    data,
+                    repeatRows=1,
+                    hAlign="LEFT",
+                    colWidths=[document.width / len(table_spec.columns)] * len(table_spec.columns),
+                )
                 table.setStyle(
                     TableStyle(
                         [
@@ -337,7 +354,9 @@ class PdfRenderer(ArtifactRenderer):
 class ArtifactToolRenderer(ArtifactRenderer):
     """Render XLSX/PPTX through the required JavaScript artifact-tool runtime."""
 
-    def __init__(self, node_executable: str, entrypoint: Path | None, timeout_seconds: float) -> None:
+    def __init__(
+        self, node_executable: str, entrypoint: Path | None, timeout_seconds: float
+    ) -> None:
         self.node_executable = node_executable
         self.entrypoint = entrypoint
         self.timeout_seconds = timeout_seconds
@@ -348,7 +367,8 @@ class ArtifactToolRenderer(ArtifactRenderer):
             raise ArtifactRenderingError("artifact-tool renderer received an unsupported format")
         if self.entrypoint is None or not self.entrypoint.is_file():
             raise ArtifactRenderingError(
-                "XLSX/PPTX rendering requires ARTIFACT_TOOL_NODE_MODULES with @oai/artifact-tool 2.7.3+."
+                "XLSX/PPTX rendering requires ARTIFACT_TOOL_NODE_MODULES "
+                "with @oai/artifact-tool 2.7.3+."
             )
         with tempfile.TemporaryDirectory(prefix="enterprise-artifact-") as directory:
             build_dir = Path(directory)
@@ -415,14 +435,16 @@ def create_renderer_registry(
     artifact_tool_entrypoint: Path | None,
     timeout_seconds: float,
 ) -> RendererRegistry:
+    from enterprise_agent.artifacts.office import PptxRenderer, XlsxRenderer
+
     artifact_tool = ArtifactToolRenderer(node_executable, artifact_tool_entrypoint, timeout_seconds)
     return RendererRegistry(
         {
             ArtifactFormat.MARKDOWN: MarkdownRenderer(),
             ArtifactFormat.JSON: JsonRenderer(),
             ArtifactFormat.DOCX: DocxRenderer(),
-            ArtifactFormat.XLSX: artifact_tool,
-            ArtifactFormat.PPTX: artifact_tool,
+            ArtifactFormat.XLSX: artifact_tool if artifact_tool_entrypoint else XlsxRenderer(),
+            ArtifactFormat.PPTX: artifact_tool if artifact_tool_entrypoint else PptxRenderer(),
             ArtifactFormat.PDF: PdfRenderer(),
         }
     )

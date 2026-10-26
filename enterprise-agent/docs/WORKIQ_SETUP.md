@@ -9,13 +9,16 @@ Create or select a confidential Entra application for the FastAPI backend:
 
 1. Record its Directory (tenant) ID and Application (client) ID.
 2. Under **Expose an API**, create a delegated scope named `access_as_user`.
+   Configure the backend to issue v2 access tokens (`api.requestedAccessTokenVersion=2`);
+   the validator expects the tenant's v2 issuer and the backend client ID audience.
 3. Create a client secret for local/pilot use. Prefer a managed certificate or workload
    identity when the deployment phase adds support for it.
 4. Add the delegated Work IQ permission `WorkIQAgent.Ask`.
 5. Have an administrator grant tenant-wide consent for that Work IQ permission.
 
-Work IQ must be enabled for the tenant and licensed for participating users. It does not
-support application-only access.
+Work IQ must be available for the tenant, with permissions, consent and the service's current
+billing configuration. Confirm these in the tenant before live testing. This adapter uses
+delegated access and does not implement application-only access.
 
 ## 2. Register/configure the client
 
@@ -23,10 +26,17 @@ The web or Teams client must request an access token for the backend API's
 `access_as_user` scope. If the client has a separate app registration, record its client ID
 so the backend can validate the token's `azp`/actor claim.
 
+For the bundled browser UI, add the frontend client's **Single-page application** redirect
+`http://localhost:8000/auth/callback`, and use **Kết nối Microsoft → Đăng nhập Microsoft**.
+See [Microsoft login](MICROSOFT_LOGIN.md) for callback, token renewal and Windows folder
+imports. The existing Desktop redirect used by the login-check script can remain.
+
 ## 3. Configure `.env`
 
 ```dotenv
 AUTH_ENABLED=true
+RUNTIME_MODE=gemini
+STORAGE_BACKEND=database
 AZURE_TENANT_ID=<home-tenant-guid>
 AZURE_CLIENT_ID=<backend-api-client-id>
 AZURE_CLIENT_SECRET=<backend-confidential-client-secret>
@@ -48,6 +58,31 @@ For multiple explicitly approved tenants, provide comma-separated tenant IDs. Do
 before OBO.
 
 ## 4. Validate
+
+Check the local client configuration, then sign in using the system browser:
+
+```powershell
+uv run python scripts/check_login.py --check-config
+uv run python scripts/check_login.py
+```
+
+The client registration needs a **Mobile and desktop applications** redirect URI of
+`http://localhost`. If multiple clients are allowlisted, select one with `--client-id`.
+The helper requests only the backend scopes and validates the token with the application's
+validator. It keeps tokens in memory and reports `LOGIN_OK`, or a failure with an AADSTS
+code when available. It does not call Work IQ or an LLM. A preauthorized client can sign in
+for its authorized scopes without user consent; see Microsoft's
+[preauthorized applications reference](https://learn.microsoft.com/en-us/graph/api/resources/apiapplication).
+
+To also check the backend client secret and downstream delegated consent, run:
+
+```powershell
+uv run python scripts/check_login.py --workiq-token
+```
+
+This performs an Entra on-behalf-of token exchange after validating the backend token.
+`WORKIQ_TOKEN_OK` confirms token acquisition, not Work IQ service access or billing readiness.
+This check does not query Microsoft 365 data or call the Work IQ service.
 
 Check configuration without exposing secrets:
 

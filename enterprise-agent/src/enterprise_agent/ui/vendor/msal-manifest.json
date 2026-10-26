@@ -1,0 +1,11 @@
+{
+  "package": "@azure/msal-browser",
+  "version": "5.26.0",
+  "source": "https://registry.npmjs.org/@azure/msal-browser/-/msal-browser-5.26.0.tgz",
+  "integrity": "sha512-GYKRquzDZmZggCdStWy2bNJKnPui1upssSuznJgP+/h6Mb0ldkUkaGvaY6uSGGmZOm0CGiBQ3b5BiGy43BpXSg==",
+  "sha256": {
+    "msal-browser.min.js": "f83e1a62547147f79bc912b8dc1b7305c8eba07cf3cd38a6f8dcbeecb6a73e24",
+    "msal-redirect-bridge.min.js": "3a530f5ab43bd81d2b2284ef2216fe16ad5a7f44aa3d78dcbbee687028401a16",
+    "MSAL-LICENSE.txt": "c544adf8f0d43453d9fdf6c11da19605d12d89806a7870653169b8cc97f5bb53"
+  }
+}

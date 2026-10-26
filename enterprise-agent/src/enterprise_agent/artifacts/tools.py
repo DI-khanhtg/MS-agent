@@ -3,6 +3,7 @@
 from enterprise_agent.artifacts.models import ArtifactSpec
 from enterprise_agent.artifacts.service import ArtifactService
 from enterprise_agent.security.identity import get_request_context
+from enterprise_agent.tools.recording import record_tool_call
 
 
 class ArtifactTools:
@@ -18,6 +19,13 @@ class ArtifactTools:
         it never updates enterprise source systems.
         """
         principal = get_request_context().principal
+        # Record before the side effect: even a failed renderer must not replay the turn.
+        record_tool_call(
+            "create_artifact",
+            {
+                "artifact_type": spec.artifact_type.value,
+                "template_id": spec.template_id,
+            },
+        )
         record = await self.service.create(spec, principal)
         return record.model_dump(mode="json")
-

@@ -1,4 +1,4 @@
-"""Enterprise-data egress gate applied before tool results reach DeepSeek."""
+"""Enterprise-data egress gate applied before tool results reach Gemini."""
 
 import hashlib
 import json
@@ -16,6 +16,7 @@ from enterprise_agent.security.redaction import (
     find_prohibited_classifications,
     sanitize_copy,
 )
+from enterprise_agent.telemetry.operations import audit_event
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +153,7 @@ class EgressGate:
             "reason": decision.reason,
         }
         logger.info("egress_decision", extra={"egress": audit})
+        audit_event("egress_decision", **audit)
         if not decision.allowed:
             raise EgressBlockedError(
                 f"Enterprise data was blocked by egress policy ({decision.reason})."
@@ -181,6 +183,10 @@ def _classify_source(source: str) -> str:
         return "enterprise_workiq"
     if normalized.startswith("fabric:"):
         return "enterprise_fabric"
+    if normalized.startswith("foundry:"):
+        return "enterprise_knowledge"
+    if normalized.startswith("local:"):
+        return "local_document"
     if normalized == "user_input":
         return "user_supplied"
     return "application_internal"

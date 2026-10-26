@@ -7,7 +7,7 @@ question argument at runtime, and calls it with a delegated Fabric bearer token.
 Microsoft's current prerequisites are paid Fabric F2+ or Power BI Premium P1+ capacity,
 Fabric tenant settings required for AI processing, at least one supported data source, read
 access to that source, and a published Data Agent. Review the external-processing warning
-before allowing results to pass through the project's DeepSeek egress gate.
+before allowing results to pass through the project's Gemini egress gate.
 
 Official references:
 
@@ -35,18 +35,26 @@ tenant, then set:
 
 ```dotenv
 AUTH_ENABLED=true
+RUNTIME_MODE=gemini
 AZURE_TENANT_ID=<tenant-guid>
 AZURE_CLIENT_ID=<backend-client-id>
 AZURE_CLIENT_SECRET=<backend-secret>
 ENTRA_API_AUDIENCE=<backend-client-id>
 AUTH_ALLOWED_TENANT_IDS=<tenant-guid>
+ENTRA_ALLOWED_CLIENT_IDS=<approved-frontend-client-id>
 
 FABRIC_WORKSPACE_ID=<workspace-guid>
 FABRIC_DATA_AGENT_ID=<data-agent-guid>
 FABRIC_MCP_URL=TO_BE_FILLED_LATER
 FABRIC_SCOPE=https://api.fabric.microsoft.com/.default
-ENABLED_TOOL_GROUPS=workiq_read,fabric_read,artifact_generation
+ENABLED_TOOL_GROUPS=fabric_read,artifact_generation
 ```
+
+Replace the demo tool groups. Authenticated `local_read` is available only in development
+and reads account-specific imports; it remains prohibited in staging/production.
+The app targets the configured workspace/Data Agent; signing in as another user does not
+automatically select that user's own workspace. Each query uses the signed-in user's
+delegated permissions against that configured Data Agent.
 
 When `FABRIC_MCP_URL` remains a placeholder, the application derives the official endpoint
 from both IDs. If supplied explicitly, it must be HTTPS on `api.fabric.microsoft.com` under
@@ -55,12 +63,28 @@ live test.
 
 ## Validate
 
-Keep the incoming user token only in the process environment:
+First run the offline configuration check. It does not validate live permissions or billing:
+
+```powershell
+uv run python scripts/check_config.py
+```
+
+Then test Fabric directly, before testing model routing. This test calls Fabric and Entra,
+but does not call Gemini or require its API key. Keep the incoming backend API access
+token only in the process environment (`$accessToken` must already contain a valid token):
 
 ```powershell
 $env:RUN_FABRIC_LIVE_EVALS = "true"
 $env:FABRIC_USER_ACCESS_TOKEN = $accessToken
 uv run pytest tests/integration/test_fabric_live.py -m live -v
+```
+
+For the combined Work IQ/Fabric routing evaluation, configure Work IQ as described in
+`WORKIQ_SETUP.md`, set `ENABLED_TOOL_GROUPS=workiq_read,fabric_read,artifact_generation`,
+and supply `GEMINI_API_KEY`. Keep `RUNTIME_MODE=gemini` and `AUTH_ENABLED=true`.
+This evaluation calls Gemini and can query both Microsoft services:
+
+```powershell
 uv run pytest evals/test_fabric_tool_selection_live.py -m live -v
 ```
 

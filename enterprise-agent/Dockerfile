@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y fonts-dejavu-core nodejs \
+    && apt-get install --no-install-recommends -y fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/* \
     && pip install --no-cache-dir uv==0.11.32
 
@@ -14,12 +14,17 @@ COPY pyproject.toml uv.lock README.md ./
 COPY config ./config
 COPY templates ./templates
 COPY src ./src
-RUN uv sync --frozen --no-dev
+COPY data/documents/Project-X ./data/documents/Project-X
+RUN uv sync --frozen --no-dev --extra production --extra voice \
+    && useradd --uid 10001 --create-home agent \
+    && mkdir -p /app/data \
+    && chown -R agent:agent /app/data
 
-# Mount the approved @oai/artifact-tool node_modules directory and set
-# ARTIFACT_TOOL_NODE_MODULES for XLSX/PPTX. Other artifact formats do not require it.
+# All six artifact formats use the packaged Python renderers by default.
 
 ENV PATH="/app/.venv/bin:$PATH"
 EXPOSE 8000
+USER agent
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3)"
 
 CMD ["uvicorn", "enterprise_agent.api.app:app", "--host", "0.0.0.0", "--port", "8000"]

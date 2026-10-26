@@ -3,14 +3,15 @@
 import json
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 from uuid import UUID
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-PLACEHOLDER_VALUES = {"", "PUT_YOUR_DEEPSEEK_API_KEY_HERE", "TO_BE_FILLED_LATER"}
+PLACEHOLDER_VALUES = {"", "PUT_YOUR_GEMINI_API_KEY_HERE", "TO_BE_FILLED_LATER"}
 
 
 class Settings(BaseSettings):
@@ -27,16 +28,47 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_env: str = "development"
+    app_env: Literal["development", "staging", "production"] = "development"
     app_host: str = "0.0.0.0"
     app_port: int = Field(default=8000, ge=1, le=65535)
     log_level: str = "INFO"
+    allowed_hosts: str = "localhost,127.0.0.1,testserver"
+    runtime_mode: Literal["gemini", "demo"] = "gemini"
+    storage_backend: Literal["memory", "database"] = "memory"
+    database_url: SecretStr = SecretStr("TO_BE_FILLED_LATER")
+    database_path: Path = PROJECT_ROOT / "data" / "agent.db"
+    local_documents_root: Path = PROJECT_ROOT / "data" / "documents"
+    local_max_file_bytes: int = Field(default=5_000_000, ge=1024, le=50_000_000)
+    local_max_files: int = Field(default=200, ge=1, le=1000)
+    max_tool_calls: int = Field(default=24, ge=1, le=100)
+    max_history_messages: int = Field(default=40, ge=4, le=200)
+    rate_limit_per_minute: int = Field(default=60, ge=1, le=10000)
+    circuit_failure_threshold: int = Field(default=5, ge=1, le=100)
+    circuit_reset_seconds: float = Field(default=30, gt=0, le=600)
+    audit_log_path: Path = PROJECT_ROOT / "data" / "audit.jsonl"
+    telemetry_enabled: bool = False
+    speech_provider: Literal["disabled", "azure"] = "disabled"
+    speech_key: SecretStr = SecretStr("TO_BE_FILLED_LATER")
+    speech_region: str = "TO_BE_FILLED_LATER"
+    speech_language: str = "vi-VN"
+    speech_max_seconds: int = Field(default=60, ge=1, le=60)
+    speech_timeout_seconds: float = Field(default=70, gt=0, le=120)
+    foundry_iq_mcp_url: str = "TO_BE_FILLED_LATER"
+    foundry_iq_api_key: SecretStr = SecretStr("TO_BE_FILLED_LATER")
+    foundry_iq_auth_mode: Literal["entra", "api_key"] = "entra"
+    foundry_iq_shared_knowledge: bool = False
 
-    deepseek_api_key: SecretStr = SecretStr("")
-    deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_model: str = "deepseek-flash"
-    deepseek_timeout_seconds: float = Field(default=60, gt=0, le=300)
-    deepseek_max_retries: int = Field(default=2, ge=0, le=5)
+    gemini_api_key: SecretStr = SecretStr("")
+    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
+    gemini_model: str = "gemini-3.8-flash"
+    gemini_timeout_seconds: float = Field(default=60, gt=0, le=300)
+    gemini_max_retries: int = Field(default=2, ge=0, le=5)
+    agent_turn_timeout_seconds: float = Field(default=300, gt=0, le=1800)
+    agent_synthesis_reserve_seconds: float = Field(default=15, ge=0)
+    # Administrator-supplied rates; omitted until a current provider tariff is confirmed.
+    input_price_per_million: float | None = Field(default=None, ge=0, le=10000)
+    output_price_per_million: float | None = Field(default=None, ge=0, le=10000)
+    cost_currency: str = Field(default="USD", min_length=3, max_length=3)
 
     auth_enabled: bool = False
     azure_tenant_id: str = "TO_BE_FILLED_LATER"
@@ -46,6 +78,8 @@ class Settings(BaseSettings):
     entra_required_scopes: str = "access_as_user"
     auth_allowed_tenant_ids: str = "TO_BE_FILLED_LATER"
     entra_allowed_client_ids: str = "TO_BE_FILLED_LATER"
+    entra_spa_client_id: str = "TO_BE_FILLED_LATER"
+    entra_spa_redirect_uri: str = "http://localhost:8000/auth/callback"
 
     workiq_mcp_url: str = "https://workiq.svc.cloud.microsoft/mcp"
     workiq_scope: str = "api://workiq.svc.cloud.microsoft/WorkIQAgent.Ask"
@@ -70,10 +104,36 @@ class Settings(BaseSettings):
     artifact_node_executable: str = "node"
     artifact_render_timeout_seconds: float = Field(default=60, gt=0, le=300)
 
-    @field_validator("deepseek_base_url")
+    @model_validator(mode="after")
+    def validate_turn_budget(self) -> "Settings":
+        if self.agent_synthesis_reserve_seconds >= self.agent_turn_timeout_seconds:
+            raise ValueError("Synthesis reserve must be smaller than the agent turn timeout")
+        return self
+
+    @field_validator("gemini_base_url")
     @classmethod
     def normalize_base_url(cls, value: str) -> str:
         return value.strip().rstrip("/")
+
+    @field_validator("entra_spa_redirect_uri")
+    @classmethod
+    def validate_spa_redirect(cls, value: str) -> str:
+        value = value.strip()
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.path != "/auth/callback"
+            or (parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1"})
+        ):
+            raise ValueError("SPA redirect must use HTTPS or loopback HTTP at /auth/callback")
+        # Accessing port also rejects malformed port values.
+        _ = parsed.port
+        return value
 
     @field_validator("log_level")
     @classmethod
@@ -106,6 +166,9 @@ class Settings(BaseSettings):
         "artifact_template_config_path",
         "artifact_template_root",
         "artifact_tool_node_modules",
+        "database_path",
+        "local_documents_root",
+        "audit_log_path",
     )
     @classmethod
     def resolve_project_path(cls, value: Path | None) -> Path | None:
@@ -114,8 +177,27 @@ class Settings(BaseSettings):
         return value if value.is_absolute() else PROJECT_ROOT / value
 
     @property
-    def deepseek_is_configured(self) -> bool:
-        return self.deepseek_api_key.get_secret_value().strip() not in PLACEHOLDER_VALUES
+    def gemini_is_configured(self) -> bool:
+        return self.gemini_api_key.get_secret_value().strip() not in PLACEHOLDER_VALUES
+
+    @property
+    def speech_is_configured(self) -> bool:
+        return bool(
+            self.speech_provider == "azure"
+            and self.speech_key.get_secret_value() not in PLACEHOLDER_VALUES
+            and self.speech_region not in PLACEHOLDER_VALUES
+        )
+
+    @property
+    def foundry_iq_is_configured(self) -> bool:
+        return bool(
+            self.foundry_iq_mcp_url not in PLACEHOLDER_VALUES
+            and (
+                self.workiq_obo_is_configured
+                if self.foundry_iq_auth_mode == "entra"
+                else self.foundry_iq_api_key.get_secret_value() not in PLACEHOLDER_VALUES
+            )
+        )
 
     @property
     def entra_api_audiences(self) -> set[str]:

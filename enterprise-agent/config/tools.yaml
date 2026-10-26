@@ -1,4 +1,12 @@
 groups:
+  local_read:
+    enabled: true
+    read_only: true
+    tools: [list_local_documents, read_local_document]
+  foundry_read:
+    enabled: true
+    read_only: true
+    tools: [knowledge_query]
   mock_read:
     enabled: true
     read_only: true
@@ -14,6 +22,7 @@ groups:
       - workiq_fetch
       - workiq_get_schema
       - workiq_search_paths
+      - workiq_read_document
   artifact_generation:
     enabled: true
     read_only: false

@@ -9,6 +9,8 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from enterprise_agent.config import Settings
+from enterprise_agent.telemetry.operations import CircuitBreaker, CircuitOpenError
+from enterprise_agent.tools.mcp_errors import is_retryable_mcp_error
 from enterprise_agent.tools.workiq.policy import validate_tool_name, validate_write_tool_name
 
 
@@ -19,6 +21,9 @@ class WorkIQClientError(RuntimeError):
 class WorkIQMCPClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.circuit = CircuitBreaker(
+            settings.circuit_failure_threshold, settings.circuit_reset_seconds
+        )
 
     async def call_tool(
         self,
@@ -32,12 +37,27 @@ class WorkIQMCPClient:
             validate_write_tool_name(name)
         else:
             validate_tool_name(name)
-        attempts = self.settings.workiq_max_retries + 1
+        try:
+            with self.circuit.request():
+                return await self._call_with_retries(
+                    name, arguments, access_token=access_token, write=write
+                )
+        except CircuitOpenError as exc:
+            raise WorkIQClientError(str(exc)) from exc
+
+    async def _call_with_retries(
+        self, name: str, arguments: dict[str, Any], *, access_token: str, write: bool,
+    ) -> dict[str, Any]:
+        # A timeout after a write can mean it already happened. Never replay mutations.
+        attempts = 1 if write else self.settings.workiq_max_retries + 1
         for attempt in range(attempts):
             try:
-                return await self._call_once(name, arguments, access_token=access_token)
+                result = await self._call_once(name, arguments, access_token=access_token)
+                self.circuit.success()
+                return result
             except Exception as exc:
-                if not _is_retryable(exc) or attempt == attempts - 1:
+                if not is_retryable_mcp_error(exc) or attempt == attempts - 1:
+                    self.circuit.failure()
                     if isinstance(exc, WorkIQClientError):
                         raise
                     raise WorkIQClientError("Work IQ MCP request failed") from exc
@@ -73,13 +93,3 @@ class WorkIQMCPClient:
         if result.isError:
             raise WorkIQClientError("Work IQ MCP tool returned an error")
         return result.model_dump(mode="json", by_alias=True, exclude_none=True)
-
-
-def _is_retryable(exc: Exception) -> bool:
-    if isinstance(exc, (TimeoutError, httpx.TimeoutException, httpx.NetworkError)):
-        return True
-    status_code = getattr(exc, "status_code", None)
-    if status_code == 429 or (isinstance(status_code, int) and status_code >= 500):
-        return True
-    message = str(exc).casefold()
-    return "429" in message or "throttl" in message or "server error" in message

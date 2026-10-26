@@ -24,9 +24,10 @@ def find_prohibited_classifications(
             for key, child in item.items():
                 separated_key = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", str(key))
                 normalized_key = separated_key.casefold().replace("-", "_")
+                if normalized_key in {"classification", "sensitivity"} and isinstance(child, str):
+                    classifications.add(child.casefold().replace("-", "_"))
                 if child not in (None, "") and any(
-                    _key_matches(normalized_key, pattern)
-                    for pattern in sensitive_key_patterns
+                    _key_matches(normalized_key, pattern) for pattern in sensitive_key_patterns
                 ):
                     classifications.add("credential")
                 visit(child)

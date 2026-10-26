@@ -40,10 +40,7 @@ class MsalOnBehalfOfTokenProvider:
                 application = msal.ConfidentialClientApplication(
                     client_id=self.settings.azure_client_id,
                     client_credential=self.settings.azure_client_secret.get_secret_value(),
-                    authority=(
-                        "https://login.microsoftonline.com/"
-                        f"{principal.tenant_id}"
-                    ),
+                    authority=(f"https://login.microsoftonline.com/{principal.tenant_id}"),
                 )
                 self._applications[principal.tenant_id] = application
             result: dict[str, Any] = await asyncio.to_thread(

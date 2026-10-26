@@ -33,4 +33,6 @@ blocking:
   prohibited_classifications:
     - credential
     - secret
+    - highly_restricted
+    - highly_restricted_data
 

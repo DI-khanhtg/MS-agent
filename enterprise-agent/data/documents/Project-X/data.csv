@@ -1,0 +1,4 @@
+metric,value,unit
+pilot_users,50,people
+estimated_requests_per_week,120,requests
+target_first_response,4,hours

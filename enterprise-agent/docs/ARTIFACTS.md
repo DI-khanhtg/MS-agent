@@ -52,24 +52,25 @@ colors, font, and optionally a DOCX base template under `templates/artifacts/`. 
 callers select only `template_id`; they cannot provide a template path. Add template files to
 the configured root, then reference them by relative path in the server-owned YAML.
 
-## XLSX and PPTX runtime
+## Renderers
 
-Markdown, JSON, DOCX, and PDF use packaged Python renderers. XLSX and PPTX use
-`@oai/artifact-tool` 2.7.3+ through Node.js. Set `ARTIFACT_TOOL_NODE_MODULES` to the directory
-that contains `@oai/artifact-tool`, for example:
+All six formats work with the packaged Python renderers. XLSX uses `openpyxl`; PPTX uses
+`python-pptx`, with pagination for dense sections and source slides. Spreadsheet strings
+are explicitly stored as text to prevent source content from becoming executable formulas.
+
+An optional existing adapter supports `@oai/artifact-tool` 2.7.3+ through Node.js. To select
+it instead of the portable Office renderers, set `ARTIFACT_TOOL_NODE_MODULES`, for example:
 
 ```text
 ARTIFACT_TOOL_NODE_MODULES=C:\runtime\node_modules
 ARTIFACT_NODE_EXECUTABLE=node
 ```
 
-The package is not available from the public npm registry. It must be supplied by the
-approved runtime used to build/deploy this service. `/health` reports
-`artifact_tool_configured`; when it is false, only XLSX/PPTX requests return 503 and the other
-formats remain available.
+The optional package must be supplied by an approved runtime. `/health` reports
+`artifact_tool_configured` for this optional adapter; a false value does not disable
+XLSX/PPTX. Offline tests validate all portable formats, while optional Node tests may skip.
 
-The spreadsheet renderer creates a readable summary sheet, freezes headers, applies semantic
-formatting, and creates one worksheet per structured table. The presentation renderer follows
-the neutral Codex Grid cover, two-column content, and evidence-table layouts and writes source
-blocks into speaker notes.
+The spreadsheet creates a summary sheet, frozen table headers and a references sheet.
+The portable presentation includes a cover, paginated sections/tables and references.
+The optional Node presentation supports its existing layouts and speaker notes.
 

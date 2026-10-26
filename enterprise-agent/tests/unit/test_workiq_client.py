@@ -124,6 +124,21 @@ async def test_mcp_client_retries_transient_timeout(monkeypatch: pytest.MonkeyPa
 
 
 @pytest.mark.asyncio
+async def test_ambiguous_write_timeout_is_never_retried(monkeypatch) -> None:
+    client = WorkIQMCPClient(settings(workiq_max_retries=3))
+    calls = []
+
+    async def timeout(*args, **kwargs):
+        calls.append(args)
+        raise TimeoutError("destination may have accepted the write")
+
+    monkeypatch.setattr(client, "_call_once", timeout)
+    with pytest.raises(WorkIQClientError):
+        await client.call_tool("do_action", {}, access_token="token", write=True)
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_mcp_client_rejects_write_tool_before_transport() -> None:
     client = WorkIQMCPClient(settings())
 
@@ -131,6 +146,4 @@ async def test_mcp_client_rejects_write_tool_before_transport() -> None:
         await client.call_tool("delete_entity", {}, access_token="delegated-token")
 
     with pytest.raises(WorkIQPolicyError):
-        await client.call_tool(
-            "delete_entity", {}, access_token="delegated-token", write=True
-        )
+        await client.call_tool("delete_entity", {}, access_token="delegated-token", write=True)

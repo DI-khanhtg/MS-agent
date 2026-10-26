@@ -16,7 +16,7 @@ PASS_RATE_THRESHOLD = 0.80
 
 @pytest.mark.live
 @pytest.mark.asyncio
-async def test_deepseek_routes_m365_requests_to_workiq() -> None:
+async def test_gemini_routes_m365_requests_to_workiq() -> None:
     if os.getenv("RUN_WORKIQ_LIVE_EVALS", "").casefold() != "true":
         pytest.skip("Set RUN_WORKIQ_LIVE_EVALS=true to run Work IQ agent evaluations")
     incoming_token = os.getenv("WORKIQ_USER_ACCESS_TOKEN", "")
@@ -24,10 +24,12 @@ async def test_deepseek_routes_m365_requests_to_workiq() -> None:
         pytest.skip("Set WORKIQ_USER_ACCESS_TOKEN in the process environment")
 
     settings = Settings()
+    if settings.runtime_mode != "gemini" or not settings.auth_enabled:
+        pytest.skip("Set RUNTIME_MODE=gemini and AUTH_ENABLED=true for live routing evaluations")
     if settings.tool_groups != {"workiq_read"}:
         pytest.skip("Set ENABLED_TOOL_GROUPS=workiq_read for the Work IQ routing evaluation")
-    if not settings.deepseek_is_configured or not settings.workiq_obo_is_configured:
-        pytest.skip("Configure DeepSeek and Entra credentials in .env")
+    if not settings.gemini_is_configured or not settings.workiq_obo_is_configured:
+        pytest.skip("Configure Gemini and Entra credentials in .env")
 
     principal = await EntraTokenValidator(settings).validate(incoming_token)
     runtime = create_app(settings=settings).state.agent_runtime

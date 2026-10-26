@@ -1,4 +1,4 @@
-# Security model - Phase 4 through 10
+# Security model - Phase 4 through 12
 
 ## Trust boundaries
 
@@ -39,8 +39,9 @@ the server-owned allowlist in `config/artifacts.yaml`.
 - maximum collection length, string length, nesting depth, and serialized payload size;
 - safe audit metadata.
 
-The gate runs on user prompts and on every Work IQ and Fabric result before either is provided
-to DeepSeek. A blocked payload results in an API error/tool error; the application does not
+The gate runs on user prompts and on every Work IQ, Fabric, knowledge and local document result
+before any is provided
+to Gemini. A blocked payload results in an API error/tool error; the application does not
 fall back to sending the original data.
 
 ## Controlled actions
@@ -52,15 +53,16 @@ expiry, and state under one lock, so repeated approval fails closed. Logs contai
 type, status, and a hashed subject—not message bodies or recipients.
 
 Delete is excluded from action types, tool registration, Work IQ write policy, and the
-approval configuration. The current in-memory store is a pilot-only boundary: run one worker
-and do not treat it as durable audit evidence.
+approval configuration. `STORAGE_BACKEND=database` persists approvals with version checks and
+an atomic execution claim. A crash after a provider accepts a write requires reconciliation;
+executing/failed actions are never automatically replayed. Memory mode remains development-only.
 
 ## Production checklist
 
 - Set `AUTH_ENABLED=true`; never deploy company-data tools with anonymous API access.
 - Use explicit tenant, audience, scope, and allowed-client values.
 - Store secrets in a managed secret store, not a container image or source control.
-- Restrict outbound network access to Entra, Work IQ, Fabric API, and DeepSeek endpoints.
+- Restrict outbound network access to Entra, Work IQ, Fabric API, and Gemini endpoints.
 - Review PII patterns and prohibited classifications with the organization's compliance
   owner before pilot use.
 - Treat egress-policy changes as security-sensitive reviewed changes.
@@ -69,7 +71,7 @@ and do not treat it as durable audit evidence.
 - Do not log access tokens, authorization headers, raw prompts, or raw Work IQ responses.
 - Keep Fabric RLS/CLS and underlying source read permissions in place; do not broaden source
   access to compensate for failed queries.
-- Replace the Phase 10 in-memory approval store with transactional durable storage and
-  cross-worker idempotency before production.
+- Use database storage and a single worker/replica. Distributed sessions and rate limits
+  are needed before scaling horizontally; approval execution already uses a transactional claim.
 - Put `data/artifacts` on encrypted durable storage with retention and deletion policies before
   production; the Phase 7 local store is intentionally not a records-management system.

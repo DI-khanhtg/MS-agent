@@ -26,11 +26,15 @@ class WorkIQActionExecutor:
         self,
         client: WorkIQMCPClient,
         token_provider: WorkIQTokenProvider,
+        enabled: bool = True,
     ) -> None:
         self.client = client
         self.token_provider = token_provider
+        self.enabled = enabled
 
     async def execute(self, action: ActionRecord, principal: Principal) -> ExecutionReceipt:
+        if not self.enabled:
+            raise ActionExecutionError("External writes are disabled in this instance")
         tool_name, arguments = _build_workiq_call(action)
         token = await self.token_provider.get_token(principal)
         result = await self.client.call_tool(
@@ -39,10 +43,11 @@ class WorkIQActionExecutor:
             access_token=token,
             write=True,
         )
-        status_code = _find_value(result, "statusCode")
+        payload = _receipt_payload(result)
+        status_code = _find_value(payload, "statusCode")
         if not isinstance(status_code, int) or status_code < 200 or status_code >= 300:
             raise ActionExecutionError("Work IQ did not return a successful status code")
-        resource_id = _find_value(result, "id")
+        resource_id = _find_value(payload, "id")
         verification = "provider_accepted" if status_code == 202 else "provider_confirmed"
         return ExecutionReceipt(
             status_code=status_code,
@@ -99,6 +104,26 @@ def _build_workiq_call(action: ActionRecord) -> tuple[str, dict[str, str]]:
 
 def _recipient(address: str) -> dict[str, dict[str, str]]:
     return {"emailAddress": {"address": address}}
+
+
+def _receipt_payload(result: dict[str, Any]) -> dict[str, Any]:
+    """Prefer structured receipts; MCP servers can also return JSON in text blocks."""
+    structured = result.get("structuredContent")
+    if isinstance(structured, dict):
+        return structured
+    for block in result.get("content", []):
+        if not isinstance(block, dict) or block.get("type") != "text":
+            continue
+        text = block.get("text")
+        if not isinstance(text, str):
+            continue
+        try:
+            payload = json.loads(text)
+        except ValueError:
+            continue
+        if isinstance(payload, dict) and _find_value(payload, "statusCode") is not None:
+            return payload
+    return result
 
 
 def _find_value(value: Any, key: str) -> Any:

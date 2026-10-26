@@ -71,7 +71,12 @@ not proof of email delivery or downstream completion.
 
 ## Current operational boundary
 
-Approval state is in-memory and single-process for this phase. It is lost on restart and is
-not safe for multiple API workers. Keep one worker for pilot use. Durable transactional
-storage, idempotency keys across restarts, distributed locking, retention, and richer audit
-export belong to Phase 12 and are required before production deployment.
+`STORAGE_BACKEND=database` preserves approvals across restarts in SQLite or PostgreSQL.
+Version checks and an atomic execution claim prevent repeated approval from executing twice.
+Microsoft 365 writes have no automatic retry, and a whole model turn is not retried after a
+tool has run. Reconcile provider receipts for ambiguous timeouts or interrupted executions.
+
+The web UI displays exact payloads, allows draft submission and rejection, and exposes the
+approve-and-execute button only with authenticated Gemini mode and `workiq_write` enabled.
+Run one worker/replica; session and rate-limit coordination remains process-local. Configure
+retention/encryption and validate live permission boundaries before production.
