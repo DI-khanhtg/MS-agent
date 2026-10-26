@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from enterprise_agent.actions.executor import (
+    ActionExecutionError,
     ExecutionReceipt,
     WorkIQActionExecutor,
     _build_workiq_call,
@@ -239,7 +240,8 @@ def test_executor_maps_only_allowlisted_workiq_mutations() -> None:
 
 
 @pytest.mark.asyncio
-async def test_executor_uses_explicit_workiq_write_boundary() -> None:
+@pytest.mark.parametrize("result_format", ["structured", "text", "conflicting_text"])
+async def test_executor_uses_explicit_workiq_write_boundary(result_format) -> None:
     class FakeTokenProvider:
         async def get_token(self, action_principal: Principal) -> str:
             return "delegated-token"
@@ -257,7 +259,15 @@ async def test_executor_uses_explicit_workiq_write_boundary() -> None:
             write: bool = False,
         ) -> dict[str, object]:
             self.call = (name, arguments, access_token, write)
-            return {"structuredContent": {"statusCode": 201, "data": {"id": "event-1"}}}
+            payload = {"statusCode": 201, "data": {"id": "event-1"}}
+            if result_format == "text":
+                return {"content": [{"type": "text", "text": json.dumps(payload)}]}
+            result = {"structuredContent": payload}
+            if result_format == "conflicting_text":
+                result["content"] = [
+                    {"type": "text", "text": json.dumps({"statusCode": 202, "id": "wrong"})}
+                ]
+            return result
 
     client = FakeClient()
     action = ActionRecord(
@@ -287,6 +297,29 @@ async def test_executor_uses_explicit_workiq_write_boundary() -> None:
     assert client.call[2:] == ("delegated-token", True)
     assert receipt.resource_id == "event-1"
     assert receipt.verification == "provider_confirmed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("text", ["not JSON", '{"statusCode": 403}', '{"id": "no-receipt"}'])
+async def test_executor_does_not_accept_unverified_text_receipt(text) -> None:
+    class TokenProvider:
+        async def get_token(self, action_principal):
+            return "delegated-token"
+
+    class Client:
+        async def call_tool(self, *args, **kwargs):
+            return {"content": [{"type": "text", "text": text}]}
+
+    action = ActionRecord(
+        action_id="1",
+        action_type=ActionType.SEND_EMAIL,
+        status=ActionStatus.EXECUTING,
+        summary="email",
+        payload={"to": ["a@example.com"], "cc": [], "subject": "Hi", "body": "Body"},
+    )
+    executor = WorkIQActionExecutor(Client(), TokenProvider())
+    with pytest.raises(ActionExecutionError, match="successful status code"):
+        await executor.execute(action, principal())
 
 
 @pytest.mark.asyncio

@@ -18,7 +18,15 @@ from enterprise_agent.agent.runtime import (
 )
 from enterprise_agent.api.auth import PrincipalDependency
 from enterprise_agent.api.schemas import ChatRequest, ChatResponse
-from enterprise_agent.security.identity import RequestContext
+from enterprise_agent.artifacts.renderers import ArtifactRenderingError
+from enterprise_agent.security.identity import (
+    RequestContext,
+    reset_request_context,
+    set_request_context,
+)
+from enterprise_agent.telemetry.operations import identity_hash
+from enterprise_agent.tools.local.documents import LocalDocumentError
+from enterprise_agent.tools.recording import get_stream_result
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["chat"])
@@ -31,22 +39,47 @@ def get_runtime(request: Request) -> AgentRuntime:
 RuntimeDependency = Annotated[AgentRuntime, Depends(get_runtime)]
 
 
+def _runtime_message(payload: ChatRequest, request: Request, principal) -> str:
+    """Pass a verified folder selection to the model, keeping visible history readable."""
+    if payload.local_folder is None:
+        return payload.message
+    if "local_read" not in request.app.state.settings.tool_groups:
+        raise HTTPException(422, "Local document access is disabled")
+    token = set_request_context(RequestContext(principal))
+    try:
+        folder = request.app.state.local_document_tools.resolve(payload.local_folder)
+        if not folder.is_dir():
+            raise LocalDocumentError("The selected folder is unavailable for this account")
+    except LocalDocumentError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    finally:
+        reset_request_context(token)
+    return (
+        f"{payload.message}\n\nSelected local document folder (user selection): "
+        f"{json.dumps(payload.local_folder, ensure_ascii=False)}. "
+        "Use the local read tools for this folder when relevant to the request."
+    )
+
+
 @router.post(
     "/chat",
     response_model=ChatResponse,
     responses={
-        502: {"description": "DeepSeek provider failure"},
+        502: {"description": "Gemini provider failure"},
         503: {"description": "Missing config"},
     },
 )
 async def chat(
     payload: ChatRequest,
+    request: Request,
     runtime: RuntimeDependency,
     principal: PrincipalDependency,
 ) -> ChatResponse:
     session_id = payload.session_id or str(uuid4())
     try:
-        result = await runtime.chat(payload.message, session_id, RequestContext(principal))
+        result = await runtime.chat(
+            _runtime_message(payload, request, principal), session_id, RequestContext(principal)
+        )
     except AgentConfigurationError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except AgentRequestTimeout as exc:
@@ -59,27 +92,56 @@ async def chat(
             status.HTTP_502_BAD_GATEWAY,
             detail="The model provider could not complete the request.",
         ) from exc
-    return ChatResponse(session_id=session_id, message=result.text, tool_calls=result.tool_calls)
+    except (LocalDocumentError, ValueError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except ArtifactRenderingError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    await _save_turn(
+        request,
+        principal,
+        session_id,
+        payload.message,
+        result.text,
+        result.tool_calls,
+        result.usage,
+    )
+    return ChatResponse(
+        session_id=session_id, message=result.text, tool_calls=result.tool_calls, usage=result.usage
+    )
 
 
 @router.post("/chat/stream", response_class=StreamingResponse)
 async def stream_chat(
     payload: ChatRequest,
+    request: Request,
     runtime: RuntimeDependency,
     principal: PrincipalDependency,
 ) -> StreamingResponse:
     session_id = payload.session_id or str(uuid4())
+    message = _runtime_message(payload, request, principal)
 
     async def events() -> AsyncIterator[str]:
+        parts = []
         yield _sse("metadata", {"session_id": session_id})
         try:
             async for text in runtime.stream_chat(
-                payload.message,
+                message,
                 session_id,
                 RequestContext(principal),
             ):
+                parts.append(text)
                 yield _sse("delta", {"text": text})
-            yield _sse("done", {"session_id": session_id})
+            details = get_stream_result()
+            await _save_turn(
+                request,
+                principal,
+                session_id,
+                payload.message,
+                "".join(parts),
+                details["tool_calls"],
+                details["usage"],
+            )
+            yield _sse("done", {"session_id": session_id, **details})
         except AgentConfigurationError as exc:
             yield _sse("error", {"code": "not_configured", "detail": str(exc)})
         except AgentRequestTimeout:
@@ -93,6 +155,9 @@ async def stream_chat(
                 {"code": "upstream_error", "detail": "The model provider request failed."},
             )
 
+        except (LocalDocumentError, ValueError, ArtifactRenderingError) as exc:
+            yield _sse("error", {"code": "invalid_source", "detail": str(exc)})
+
     return StreamingResponse(
         events(),
         media_type="text/event-stream",
@@ -102,3 +167,32 @@ async def stream_chat(
 
 def _sse(event: str, data: dict[str, object]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+async def _save_turn(request, principal, session_id, message, answer, tools, usage):
+    gate = request.app.state.egress
+
+    def safe(value):
+        decision = gate.evaluate(value)
+        return decision.payload if decision.allowed else "[Blocked by egress policy]"
+
+    await request.app.state.conversations.append(
+        session_id,
+        principal,
+        str(safe(message)),
+        str(safe(answer)),
+        safe(tools) if isinstance(safe(tools), list) else [],
+        usage,
+    )
+    request.app.state.audit.emit(
+        "chat_completed",
+        request_id=request.state.request_id,
+        session_hash=identity_hash(session_id),
+        subject_hash=identity_hash(principal.isolation_key),
+        model=request.app.state.settings.gemini_model,
+        mode=request.app.state.settings.runtime_mode,
+        tool_calls=len(tools),
+        input_tokens=usage.get("input_token_count", 0),
+        output_tokens=usage.get("output_token_count", 0),
+        status="ok",
+    )

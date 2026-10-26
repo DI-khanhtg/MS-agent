@@ -1,0 +1,65 @@
+name: Enterprise Agent Release
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        type: choice
+        options: [staging, production]
+        default: staging
+      image_digest:
+        description: 'Existing tested ACR sha256 digest; required for production'
+        type: string
+        required: false
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      ACR_NAME: ${{ vars.ACR_NAME }}
+      RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      APP_NAME: ${{ vars.CONTAINER_APP_NAME }}
+      IMAGE_TAG: ${{ github.sha }}
+      IMAGE_DIGEST: ${{ inputs.image_digest }}
+      RELEASE_ENV: ${{ inputs.environment }}
+      RELEASE_REVISION: r${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.32'
+      - working-directory: enterprise-agent
+        run: |
+          uv sync --locked --extra dev
+          uv run ruff check .
+          uv run pytest -m "not live" -q
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_OIDC_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Deploy immutable image; promote the staging digest for production
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_ENV" == "production" && -z "$IMAGE_DIGEST" ]]; then
+            echo "Supply the image digest validated in staging. Production does not rebuild."
+            exit 1
+          fi
+          if [[ -n "$IMAGE_DIGEST" && ! "$IMAGE_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Invalid image digest"
+            exit 1
+          fi
+          az acr login --name "$ACR_NAME"
+          REGISTRY=$(az acr show --name "$ACR_NAME" --query loginServer -o tsv)
+          if [[ -z "$IMAGE_DIGEST" ]]; then
+            TAG="$IMAGE_TAG-$RELEASE_REVISION"
+            docker build -t "$REGISTRY/enterprise-agent:$TAG" enterprise-agent
+            docker push "$REGISTRY/enterprise-agent:$TAG"
+            IMAGE_DIGEST=$(az acr repository show --name "$ACR_NAME" --image "enterprise-agent:$TAG" --query digest -o tsv)
+          fi
+          az containerapp update --name "$APP_NAME" --resource-group "$RESOURCE_GROUP" --image "$REGISTRY/enterprise-agent@$IMAGE_DIGEST" --revision-suffix "$RELEASE_REVISION"
+          REVISION=$(az containerapp show --name "$APP_NAME" --resource-group "$RESOURCE_GROUP" --query properties.latestRevisionName -o tsv)
+          az containerapp ingress traffic set --name "$APP_NAME" --resource-group "$RESOURCE_GROUP" --revision-weight "$REVISION=100"
+          echo "Promoted image: $REGISTRY/enterprise-agent@$IMAGE_DIGEST" >> "$GITHUB_STEP_SUMMARY"

@@ -14,5 +14,13 @@ dist/
 build/
 *.egg-info/
 data/artifacts/
+data/*.db*
+data/*.jsonl*
+data/*.png
+coverage.xml
+data/backups/
+data/documents/*
+!data/documents/Project-X/
+!data/documents/Project-X/**
 tmp/
 output/

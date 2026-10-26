@@ -62,6 +62,8 @@ def create_default_registry(
     artifact_tools: "ArtifactTools | None" = None,
     fabric_tools: "FabricReadTools | None" = None,
     action_tools: "ControlledActionTools | None" = None,
+    local_tools: Any | None = None,
+    knowledge_tools: Any | None = None,
 ) -> ToolRegistry:
     definitions = [
         ToolDefinition("get_current_user", "mock_read", get_current_user),
@@ -70,6 +72,12 @@ def create_default_registry(
         ToolDefinition("get_mock_calendar", "mock_read", get_mock_calendar),
     ]
     if workiq_tools is not None:
+        if hasattr(workiq_tools, "workiq_read_document"):
+            definitions.append(
+                ToolDefinition(
+                    "workiq_read_document", "workiq_read", workiq_tools.workiq_read_document
+                )
+            )
         definitions.extend(
             [
                 ToolDefinition("workiq_fetch", "workiq_read", workiq_tools.workiq_fetch),
@@ -85,6 +93,21 @@ def create_default_registry(
                 ),
             ]
         )
+    if local_tools is not None:
+        definitions.extend(
+            [
+                ToolDefinition(
+                    "list_local_documents", "local_read", local_tools.list_local_documents
+                ),
+                ToolDefinition(
+                    "read_local_document", "local_read", local_tools.read_local_document
+                ),
+            ]
+        )
+    if knowledge_tools is not None:
+        definitions.append(
+            ToolDefinition("knowledge_query", "foundry_read", knowledge_tools.knowledge_query)
+        )
     if artifact_tools is not None:
         definitions.append(
             ToolDefinition(
@@ -95,9 +118,7 @@ def create_default_registry(
             )
         )
     if fabric_tools is not None:
-        definitions.append(
-            ToolDefinition("fabric_query", "fabric_read", fabric_tools.fabric_query)
-        )
+        definitions.append(ToolDefinition("fabric_query", "fabric_read", fabric_tools.fabric_query))
     if action_tools is not None:
         definitions.extend(
             [

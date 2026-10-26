@@ -7,38 +7,71 @@ from pydantic import ValidationError
 from enterprise_agent.config import Settings
 
 
-def test_deepseek_defaults_match_master_plan() -> None:
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "http://example.com/auth/callback",
+        "https://user:password@example.com/auth/callback",
+        "https://example.com/auth/callback?code=secret",
+        "https://example.com/auth/callback#fragment",
+        "javascript:alert(1)",
+        "https://example.com/unhandled-path",
+    ],
+)
+def test_spa_redirect_rejects_insecure_or_unhandled_destinations(uri):
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, entra_spa_redirect_uri=uri)
+
+
+def test_gemini_defaults_target_google_api() -> None:
     settings = Settings(_env_file=None)
 
-    assert settings.deepseek_base_url == "https://api.deepseek.com"
-    assert settings.deepseek_model == "deepseek-flash"
+    assert settings.gemini_base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
+    assert settings.gemini_model == "gemini-3.8-flash"
+    assert settings.runtime_mode == "gemini"
 
 
 def test_placeholder_key_is_not_configured() -> None:
     settings = Settings(
         _env_file=None,
-        deepseek_api_key="PUT_YOUR_DEEPSEEK_API_KEY_HERE",
+        gemini_api_key="PUT_YOUR_GEMINI_API_KEY_HERE",
     )
 
-    assert settings.deepseek_is_configured is False
+    assert settings.gemini_is_configured is False
 
 
 def test_real_key_is_configured_without_exposing_it() -> None:
-    settings = Settings(_env_file=None, deepseek_api_key="test-secret-key")
+    settings = Settings(_env_file=None, gemini_api_key="test-secret-key")
 
-    assert settings.deepseek_is_configured is True
-    assert "test-secret-key" not in repr(settings.deepseek_api_key)
+    assert settings.gemini_is_configured is True
+    assert "test-secret-key" not in repr(settings.gemini_api_key)
 
 
 def test_base_url_is_normalized() -> None:
-    settings = Settings(_env_file=None, deepseek_base_url="https://api.deepseek.com///")
+    settings = Settings(
+        _env_file=None, gemini_base_url="https://generativelanguage.googleapis.com/v1beta/openai///"
+    )
 
-    assert settings.deepseek_base_url == "https://api.deepseek.com"
+    assert settings.gemini_base_url == "https://generativelanguage.googleapis.com/v1beta/openai"
 
 
 def test_invalid_timeout_is_rejected() -> None:
     with pytest.raises(ValidationError):
-        Settings(_env_file=None, deepseek_timeout_seconds=0)
+        Settings(_env_file=None, gemini_timeout_seconds=0)
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        {"agent_turn_timeout_seconds": 0},
+        {"agent_turn_timeout_seconds": 1801},
+        {"agent_synthesis_reserve_seconds": -1},
+        {"agent_turn_timeout_seconds": 10, "agent_synthesis_reserve_seconds": 10},
+    ],
+)
+def test_invalid_turn_budget_is_rejected(values):
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **values)
 
 
 def test_auth_and_obo_configuration_are_reported_separately() -> None:

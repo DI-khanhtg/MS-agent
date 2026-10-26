@@ -1,51 +1,56 @@
+import base64
 import json
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import httpx2
 import pytest
-from agent_framework.openai import OpenAIChatClient
 from openai import AsyncOpenAI
 
-from enterprise_agent.agent.factory import create_enterprise_agent
+from enterprise_agent.agent.factory import create_enterprise_agent, create_gemini_client
 from enterprise_agent.agent.runtime import AgentResult, MicrosoftAgentRuntime
 from enterprise_agent.config import Settings
 from enterprise_agent.security.egress import EgressGate
-from enterprise_agent.security.identity import Principal, RequestContext
-from enterprise_agent.tools.recording import record_tool_call
+from enterprise_agent.security.identity import (
+    Principal,
+    RequestContext,
+    reset_request_context,
+    set_request_context,
+)
+from enterprise_agent.storage.database import Database
+from enterprise_agent.tools.local.documents import LocalDocumentTools
+from enterprise_agent.tools.recording import get_stream_result, record_tool_call
 from enterprise_agent.tools.registry import ToolRegistry, create_default_registry
 from enterprise_agent.tools.workiq.tools import WorkIQReadTools
 
 
 def _response(output: list[dict[str, Any]], response_number: int) -> dict[str, Any]:
+    calls = [
+        {
+            "id": item["call_id"],
+            "type": "function",
+            "function": {"name": item["name"], "arguments": item["arguments"]},
+            "extra_content": {"google": {"thought_signature": f"signature-{item['call_id']}"}},
+        }
+        for item in output
+        if item["type"] == "function_call"
+    ]
+    text = "".join(
+        part["text"] for item in output if item["type"] == "message" for part in item["content"]
+    )
     return {
-        "id": f"resp_{response_number}",
-        "object": "response",
-        "created_at": 0,
-        "status": "completed",
-        "background": False,
-        "error": None,
-        "incomplete_details": None,
-        "instructions": None,
-        "max_output_tokens": None,
-        "model": "deepseek-flash",
-        "output": output,
-        "parallel_tool_calls": True,
-        "previous_response_id": None,
-        "reasoning": None,
-        "store": False,
-        "temperature": 1,
-        "text": {"format": {"type": "text"}},
-        "tool_choice": "auto",
-        "tools": [],
-        "top_p": 1,
-        "truncation": "disabled",
-        "usage": {
-            "input_tokens": 10,
-            "input_tokens_details": {"cached_tokens": 0},
-            "output_tokens": 5,
-            "output_tokens_details": {"reasoning_tokens": 0},
-            "total_tokens": 15,
-        },
+        "id": f"chatcmpl_{response_number}",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "gemini-3.8-flash",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": text or None, "tool_calls": calls},
+                "finish_reason": "tool_calls" if calls else "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
     }
 
 
@@ -66,9 +71,7 @@ def _message(text: str, number: int) -> dict[str, Any]:
         "id": f"msg_{number}",
         "status": "completed",
         "role": "assistant",
-        "content": [
-            {"type": "output_text", "text": text, "annotations": [], "logprobs": []}
-        ],
+        "content": [{"type": "output_text", "text": text, "annotations": [], "logprobs": []}],
     }
 
 
@@ -89,16 +92,17 @@ async def _run_script(
     http_client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
     openai_client = AsyncOpenAI(
         api_key="test-key",
-        base_url="https://api.deepseek.com",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
         http_client=http_client,
     )
-    framework_client = OpenAIChatClient(async_client=openai_client, model="deepseek-flash")
     settings = Settings(
         _env_file=None,
-        deepseek_api_key="test-key",
-        deepseek_max_retries=0,
+        gemini_api_key="test-key",
+        gemini_max_retries=0,
         enabled_tool_groups=enabled_tool_groups,
     )
+    with patch("enterprise_agent.agent.factory.AsyncOpenAI", return_value=openai_client):
+        framework_client = create_gemini_client(settings)
     agent = create_enterprise_agent(
         settings,
         registry or create_default_registry(),
@@ -113,6 +117,53 @@ async def _run_script(
 
 
 @pytest.mark.asyncio
+async def test_real_framework_turn_can_resume_after_database_restart(tmp_path, monkeypatch):
+    requests = []
+    outputs = [
+        [_function_call("get_project_status", {"project_id": "alpha"}, 1)],
+        [_message("First grounded answer", 2)],
+        [_message("Resumed answer", 3)],
+    ]
+
+    async def handler(request):
+        requests.append(json.loads(request.content))
+        return httpx2.Response(200, json=_response(outputs[len(requests) - 1], len(requests)))
+
+    openai_client = AsyncOpenAI(
+        api_key="test-key",
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+    )
+    settings = Settings(
+        _env_file=None,
+        gemini_api_key="test-key",
+        gemini_max_retries=0,
+        enabled_tool_groups="mock_read",
+        database_path=tmp_path / "state.db",
+    )
+    with patch("enterprise_agent.agent.factory.AsyncOpenAI", return_value=openai_client):
+        framework_client = create_gemini_client(settings)
+    monkeypatch.setattr(
+        "enterprise_agent.agent.runtime.create_gemini_client", lambda settings: framework_client
+    )
+    database = Database(settings)
+    first = MicrosoftAgentRuntime(settings, database=database)
+    try:
+        await first.chat("First turn", "resumed")
+        saved = database.get("framework_sessions", "anonymous:anonymous:resumed", "runtime")
+        assert saved is not None
+        restarted = MicrosoftAgentRuntime(settings, database=database)
+        result = await restarted.chat("Continue the prior analysis", "resumed")
+        assert result.text == "Resumed answer"
+        assert result.usage["input_token_count"] == 10
+        assert "First grounded answer" in json.dumps(requests[-1])
+        assert "signature-call_1" in json.dumps(requests[-1])
+    finally:
+        await openai_client.close()
+        database.engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_single_tool_call_round_trip() -> None:
     result, requests = await _run_script(
         [
@@ -124,9 +175,16 @@ async def test_single_tool_call_round_trip() -> None:
     assert result.text == "Project Alpha is at risk."
     assert [call["name"] for call in result.tool_calls] == ["get_project_status"]
     assert len(requests) == 2
-    assert requests[0]["model"] == "deepseek-flash"
+    assert requests[0]["model"] == "gemini-3.8-flash"
     assert requests[0]["tools"]
-    assert requests[1]["input"][0]["type"] == "function_call_output"
+    instructions = requests[0]["messages"][0]["content"]
+    assert "get_project_status" in instructions
+    assert "workiq_fetch" not in instructions
+    assert "fabric_query" not in instructions
+    assert requests[1]["messages"][-1]["role"] == "tool"
+    assert requests[1]["messages"][-2]["tool_calls"][0]["extra_content"] == {
+        "google": {"thought_signature": "signature-call_1"}
+    }
 
 
 @pytest.mark.asyncio
@@ -145,7 +203,7 @@ async def test_multiple_tools_can_run_in_one_model_turn() -> None:
         "get_project_status",
         "search_mock_documents",
     }
-    assert len(requests[1]["input"]) == 2
+    assert len([m for m in requests[1]["messages"] if m["role"] == "tool"]) == 2
 
 
 @pytest.mark.asyncio
@@ -155,6 +213,117 @@ async def test_direct_answer_avoids_wrong_tools() -> None:
     assert result.text == "Hello!"
     assert result.tool_calls == []
     assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_gemini_stream_keeps_parallel_tool_signatures_and_usage() -> None:
+    requests = []
+    settings = Settings(_env_file=None, gemini_api_key="test-key", enabled_tool_groups="mock_read")
+
+    async def handler(request):
+        assert str(request.url) == (
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        )
+        assert request.headers["authorization"] == "Bearer test-key"
+        payload = json.loads(request.content)
+        requests.append(payload)
+        assert payload["stream"] is True
+        if len(requests) == 1:
+            deltas = [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {"name": "get_project_status", "arguments": ""},
+                        },
+                        {
+                            "index": 1,
+                            "id": "call_2",
+                            "type": "function",
+                            "function": {"name": "search_mock_documents", "arguments": ""},
+                        },
+                    ],
+                },
+                {
+                    "tool_calls": [
+                        {
+                            "index": 1,
+                            "function": {"arguments": '{"query":"Alpha"}'},
+                            "extra_content": {
+                                "google": {"thought_signature": "stream-signature-2"}
+                            },
+                        },
+                        {
+                            "index": 0,
+                            "function": {"arguments": '{"project_id":"alpha"}'},
+                            "extra_content": {
+                                "google": {"thought_signature": "stream-signature-1"}
+                            },
+                        },
+                    ]
+                },
+            ]
+        else:
+            calls = next(m["tool_calls"] for m in payload["messages"] if m.get("tool_calls"))
+            assert {c["id"]: c["extra_content"] for c in calls} == {
+                "call_1": {"google": {"thought_signature": "stream-signature-1"}},
+                "call_2": {"google": {"thought_signature": "stream-signature-2"}},
+            }
+            assert len([m for m in payload["messages"] if m["role"] == "tool"]) == 2
+            deltas = [{"role": "assistant", "content": "Grounded "}, {"content": "answer."}]
+        chunks = []
+        for delta in deltas:
+            chunks.append(
+                {
+                    "id": f"chunk-{len(requests)}",
+                    "object": "chat.completion.chunk",
+                    "created": 0,
+                    "model": "gemini-3.8-flash",
+                    "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+                }
+            )
+        chunks.append(
+            {
+                "id": f"chunk-{len(requests)}",
+                "object": "chat.completion.chunk",
+                "created": 0,
+                "model": "gemini-3.8-flash",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "tool_calls" if len(requests) == 1 else "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            }
+        )
+        body = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks) + "data: [DONE]\n\n"
+        return httpx2.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    openai_client = AsyncOpenAI(
+        api_key="test-key",
+        base_url=settings.gemini_base_url,
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+    )
+    with patch("enterprise_agent.agent.factory.AsyncOpenAI", return_value=openai_client):
+        framework_client = create_gemini_client(settings)
+    agent = create_enterprise_agent(settings, create_default_registry(), client=framework_client)
+    runtime = MicrosoftAgentRuntime(settings, agent=agent)
+    try:
+        parts = [part async for part in runtime.stream_chat("Summarize Alpha", "stream-session")]
+        assert "".join(parts) == "Grounded answer."
+        assert len(requests) == 2
+        assert get_stream_result()["usage"] == {"input_token_count": 20, "output_token_count": 10}
+        assert {call["name"] for call in get_stream_result()["tool_calls"]} == {
+            "get_project_status",
+            "search_mock_documents",
+        }
+    finally:
+        await openai_client.close()
 
 
 @pytest.mark.asyncio
@@ -168,9 +337,9 @@ async def test_invalid_arguments_are_returned_to_model() -> None:
 
     assert result.text == "I could not use that calendar argument."
     assert [call["name"] for call in result.tool_calls] == ["get_mock_calendar"]
-    tool_output = requests[1]["input"][0]
-    assert tool_output["type"] == "function_call_output"
-    assert tool_output["output"] == "Error: Function failed."
+    tool_output = requests[1]["messages"][-1]
+    assert tool_output["role"] == "tool"
+    assert tool_output["content"] == "Error: Function failed."
 
 
 @pytest.mark.asyncio
@@ -246,6 +415,113 @@ async def test_workiq_result_is_redacted_before_second_model_request() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("case", ["pdf", "access_denied", "invalid_path", "corrupt_pdf"])
+async def test_document_result_reaches_model_through_real_framework(document_files, case):
+    _, content, expected = document_files["pdf"]
+    client, provider = AsyncMock(), AsyncMock()
+    provider.get_token.return_value = "delegated-token"
+    payload = {"base64Content": base64.b64encode(content).decode()}
+    if case == "access_denied":
+        payload["statusCode"] = 403
+    elif case == "corrupt_pdf":
+        payload["base64Content"] = base64.b64encode(b"invalid pdf").decode()
+    client.call_tool.return_value = {"structuredContent": payload}
+    tools = WorkIQReadTools(
+        client, provider, EgressGate.from_yaml(Settings(_env_file=None).egress_policy_path)
+    )
+    principal = Principal(
+        tenant_id="tenant-a",
+        object_id="user-a",
+        subject="subject-a",
+        username=None,
+        scopes=frozenset({"access_as_user"}),
+        client_id="frontend",
+        access_token="incoming-token",
+    )
+    path = "/me/drive/items" if case == "invalid_path" else "/me/drive/items/item"
+    _, requests = await _run_script(
+        [
+            [
+                _function_call(
+                    "workiq_read_document", {"path": path, "filename": "[REDACTED].pdf"}, 1
+                )
+            ],
+            [_message("Document result received.", 2)],
+        ],
+        registry=create_default_registry(tools),
+        enabled_tool_groups="workiq_read",
+        context=RequestContext(principal),
+    )
+    messages = [m["content"] for m in requests[1]["messages"] if m["role"] == "tool"]
+    assert len(messages) == 1
+    data = json.loads(messages[0])["data"]
+    if case == "pdf":
+        assert expected in data["text"]
+        assert data["extraction"]["format"] == "pdf"
+    else:
+        assert (
+            data["error"]["code"]
+            == {
+                "access_denied": "document_access_denied",
+                "invalid_path": "invalid_document_path",
+                "corrupt_pdf": "document_extraction_failed",
+            }[case]
+        )
+        assert "text" not in data
+    assert "Function failed" not in messages[0]
+    if case == "invalid_path":
+        client.call_tool.assert_not_called()
+    else:
+        client.call_tool.assert_awaited_once_with(
+            "fetch_blob", {"path": "/me/drive/items/item/content"}, access_token="delegated-token"
+        )
+
+
+@pytest.mark.asyncio
+async def test_local_inventory_reference_reads_numeric_pdf_through_framework(
+    tmp_path, document_files
+):
+    _, content, expected = document_files["pdf"]
+    settings = Settings(
+        _env_file=None,
+        auth_enabled=True,
+        local_documents_root=tmp_path,
+        enabled_tool_groups="local_read",
+    )
+    reader = LocalDocumentTools(settings, EgressGate.from_yaml(settings.egress_policy_path))
+    context = RequestContext(
+        Principal("tenant", "reader", "reader", None, frozenset(), "frontend", "test-token")
+    )
+    token = set_request_context(context)
+    try:
+        reader.import_documents([("import-1234567890/1571309665.pdf", content)])
+        reference = reader.manifest()["files"][0]["document_id"]
+    finally:
+        reset_request_context(token)
+    _, requests = await _run_script(
+        [
+            [_function_call("list_local_documents", {}, 1)],
+            [_function_call("read_local_document", {"document_id": reference}, 2)],
+            [_message("PDF read successfully.", 3)],
+        ],
+        registry=create_default_registry(local_tools=reader),
+        enabled_tool_groups="local_read",
+        context=context,
+    )
+    inventory = json.loads(
+        next(m["content"] for m in requests[1]["messages"] if m["role"] == "tool")
+    )["data"]
+    assert inventory["files"][0]["document_id"] == reference
+    assert "[REDACTED]" in inventory["files"][0]["path"]
+    read_messages = [
+        json.loads(m["content"])["data"] for m in requests[2]["messages"] if m["role"] == "tool"
+    ]
+    assert expected in read_messages[-1]["text"]
+    assert read_messages[-1]["extraction"]["unit_count"] == 1
+    assert "1571309665" not in json.dumps(read_messages)
+
+
+@pytest.mark.asyncio
 async def test_multi_source_workflow_retrieves_both_sources_before_artifact() -> None:
     class ScriptedWorkIQTools:
         async def workiq_fetch(self, entity_urls: list[str]) -> dict[str, Any]:
@@ -276,12 +552,8 @@ async def test_multi_source_workflow_retrieves_both_sources_before_artifact() ->
     result, requests = await _run_script(
         [
             [
-                _function_call(
-                    "workiq_fetch", {"entity_urls": ["/me/messages?$top=5"]}, 1
-                ),
-                _function_call(
-                    "fabric_query", {"question": "Project X budget versus actual"}, 2
-                ),
+                _function_call("workiq_fetch", {"entity_urls": ["/me/messages?$top=5"]}, 1),
+                _function_call("fabric_query", {"question": "Project X budget versus actual"}, 2),
             ],
             [
                 _function_call(

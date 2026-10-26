@@ -1,0 +1,33 @@
+name: Enterprise Agent CI
+on:
+  push:
+    paths: ['enterprise-agent/**', '.github/workflows/enterprise-agent-ci.yml']
+  pull_request:
+    paths: ['enterprise-agent/**', '.github/workflows/enterprise-agent-ci.yml']
+permissions:
+  contents: read
+jobs:
+  offline-tests:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: enterprise-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          version: '0.11.32'
+      - run: uv sync --locked --extra dev
+      - run: uv run ruff check .
+      - name: Compile deployment template
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          curl --fail --location --output "$RUNNER_TEMP/bicep" https://github.com/Azure/bicep/releases/download/v0.48.1/bicep-linux-x64
+          chmod +x "$RUNNER_TEMP/bicep"
+          "$RUNNER_TEMP/bicep" build infra/main.bicep --stdout > /dev/null
+      - run: uv run pytest -m "not live" --cov=enterprise_agent --cov-report=xml

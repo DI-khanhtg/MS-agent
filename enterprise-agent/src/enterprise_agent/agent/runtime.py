@@ -3,13 +3,20 @@
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from typing import Any, Protocol, TypeVar
 
 from agent_framework import AgentSession
+from openai import APIConnectionError, APITimeoutError
 
-from enterprise_agent.agent.factory import create_deepseek_client, create_enterprise_agent
-from enterprise_agent.agent.session import InMemorySessionStore
+from enterprise_agent.agent.budget import turn_budget
+from enterprise_agent.agent.factory import create_enterprise_agent, create_gemini_client
+from enterprise_agent.agent.session import (
+    InMemorySessionStore,
+    PersistentSessionStore,
+    SessionEntry,
+)
 from enterprise_agent.config import Settings
 from enterprise_agent.security.egress import EgressBlockedError, EgressGate
 from enterprise_agent.security.identity import (
@@ -18,10 +25,19 @@ from enterprise_agent.security.identity import (
     reset_request_context,
     set_request_context,
 )
+from enterprise_agent.storage.database import Database
+from enterprise_agent.telemetry.operations import (
+    CircuitBreaker,
+    CircuitOpenError,
+    ExecutionTiming,
+    identity_hash,
+    observe_execution,
+)
 from enterprise_agent.tools.recording import (
     begin_tool_recording,
     end_tool_recording,
     get_recorded_tool_calls,
+    set_stream_result,
 )
 from enterprise_agent.tools.registry import ToolRegistry, create_default_registry
 
@@ -49,6 +65,7 @@ class AgentEgressBlocked(RuntimeError):
 class AgentResult:
     text: str
     tool_calls: list[dict[str, Any]]
+    usage: dict[str, int] = field(default_factory=dict)
 
 
 class AgentRuntime(Protocol):
@@ -68,7 +85,7 @@ class AgentRuntime(Protocol):
 
 
 class MicrosoftAgentRuntime:
-    """Run isolated agents over a shared client and maintain in-memory sessions."""
+    """Run isolated agents over a shared client with optional durable sessions."""
 
     def __init__(
         self,
@@ -76,6 +93,7 @@ class MicrosoftAgentRuntime:
         registry: ToolRegistry | None = None,
         agent: Any | None = None,
         egress_gate: EgressGate | None = None,
+        database: Database | None = None,
     ) -> None:
         self.settings = settings
         self.registry = registry or create_default_registry()
@@ -83,15 +101,19 @@ class MicrosoftAgentRuntime:
         self._client: Any | None = None
         self._sessions: InMemorySessionStore | None = None
         self._egress_gate = egress_gate or EgressGate.from_yaml(settings.egress_policy_path)
+        self._database = database
+        self._circuit = CircuitBreaker(
+            settings.circuit_failure_threshold, settings.circuit_reset_seconds
+        )
 
     def _ensure_initialized(self) -> None:
         if self._sessions is None:
             if self._injected_agent is not None:
                 self._sessions = InMemorySessionStore(self._injected_agent.create_session)
                 return
-            if not self.settings.deepseek_is_configured:
+            if not self.settings.gemini_is_configured:
                 raise AgentConfigurationError(
-                    "DeepSeek is not configured. Set DEEPSEEK_API_KEY in enterprise-agent/.env."
+                    "Gemini is not configured. Set GEMINI_API_KEY in enterprise-agent/.env."
                 )
             if "workiq_read" in self.settings.tool_groups and (
                 not self.settings.auth_enabled or not self.settings.workiq_obo_is_configured
@@ -118,11 +140,21 @@ class MicrosoftAgentRuntime:
                 raise AgentConfigurationError(
                     "workiq_write cannot start when backend approval enforcement is disabled"
                 )
+            if "foundry_read" in self.settings.tool_groups and (
+                not self.settings.auth_enabled or not self.settings.foundry_iq_is_configured
+            ):
+                raise AgentConfigurationError("foundry_read requires auth and a configured KB")
+            if "local_read" in self.settings.tool_groups and self.settings.app_env != "development":
+                raise AgentConfigurationError("local_read is available only in development")
             try:
-                self._client = create_deepseek_client(self.settings)
+                self._client = create_gemini_client(self.settings)
             except (ValueError, ImportError) as exc:
                 raise AgentConfigurationError(str(exc)) from exc
-            self._sessions = InMemorySessionStore(AgentSession)
+            self._sessions = (
+                PersistentSessionStore(self._database)
+                if self._database
+                else InMemorySessionStore(AgentSession)
+            )
 
     def _new_agent(self) -> Any:
         self._ensure_initialized()
@@ -133,22 +165,75 @@ class MicrosoftAgentRuntime:
         except ValueError as exc:
             raise AgentConfigurationError(str(exc)) from exc
 
-    async def _with_retries(self, operation: Callable[[], Awaitable[T]]) -> T:
-        attempts = self.settings.deepseek_max_retries + 1
+    async def _with_retries(
+        self,
+        operation: Callable[[], Awaitable[T]],
+        timing: ExecutionTiming,
+    ) -> T:
+        attempts = self.settings.gemini_max_retries + 1
         for attempt in range(attempts):
             try:
-                async with asyncio.timeout(self.settings.deepseek_timeout_seconds):
-                    return await operation()
-            except TimeoutError as exc:
-                if attempt == attempts - 1:
-                    raise AgentRequestTimeout("DeepSeek request timed out") from exc
+                timing.attempts += 1
+                result = await operation()
+                self._circuit.success()
+                return result
+            except (TimeoutError, APITimeoutError) as exc:
+                if get_recorded_tool_calls() or attempt == attempts - 1:
+                    self._circuit.failure()
+                    raise AgentRequestTimeout("Gemini request timed out") from exc
             except Exception as exc:
-                if not _is_retryable(exc) or attempt == attempts - 1:
-                    raise AgentUpstreamError("DeepSeek request failed") from exc
+                if get_recorded_tool_calls() or not _is_retryable(exc) or attempt == attempts - 1:
+                    self._circuit.failure()
+                    raise AgentUpstreamError("Gemini request failed") from exc
             delay = min(0.25 * (2**attempt), 2.0)
-            logger.warning("Retrying DeepSeek request", extra={"attempt": attempt + 2})
+            logger.warning("Retrying Gemini request", extra={"attempt": attempt + 2})
             await asyncio.sleep(delay)
         raise AssertionError("retry loop exited unexpectedly")
+
+    @asynccontextmanager
+    async def _turn(
+        self,
+        session_id: str,
+        context: RequestContext,
+        *,
+        stream: bool = False,
+    ) -> AsyncIterator[tuple[Any, SessionEntry, ExecutionTiming]]:
+        request_context = context
+        context_token = set_request_context(request_context)
+        token = begin_tool_recording(self.settings.max_tool_calls)
+        with observe_execution(
+            "agent_turn",
+            "stream" if stream else "chat",
+            mode=self.settings.runtime_mode,
+            subject_hash=identity_hash(request_context.principal.isolation_key),
+            session_hash=identity_hash(request_context.session_storage_key(session_id)),
+        ) as timing:
+            try:
+                with turn_budget(
+                    self.settings.agent_turn_timeout_seconds,
+                    self.settings.agent_synthesis_reserve_seconds,
+                ):
+                    async with asyncio.timeout(self.settings.agent_turn_timeout_seconds):
+                        agent = self._new_agent()
+                        assert self._sessions is not None
+                        async with self._sessions.locked(
+                            request_context.session_storage_key(session_id)
+                        ) as entry:
+                            try:
+                                with self._circuit.request():
+                                    yield agent, entry, timing
+                            except CircuitOpenError as exc:
+                                raise AgentUpstreamError(str(exc)) from exc
+            except (TimeoutError, AgentRequestTimeout) as exc:
+                timing.status = "timeout"
+                if isinstance(exc, AgentRequestTimeout):
+                    raise
+                raise AgentRequestTimeout(
+                    "Agent turn timed out; requested work may be incomplete."
+                ) from exc
+            finally:
+                end_tool_recording(token)
+                reset_request_context(context_token)
 
     async def chat(
         self,
@@ -156,24 +241,23 @@ class MicrosoftAgentRuntime:
         session_id: str,
         context: RequestContext | None = None,
     ) -> AgentResult:
-        agent = self._new_agent()
-        assert self._sessions is not None
         request_context = context or RequestContext(Principal.anonymous())
-        safe_message = self._sanitize_input(message, request_context.principal)
-        entry = await self._sessions.get_or_create(
-            request_context.session_storage_key(session_id)
-        )
-        context_token = set_request_context(request_context)
-        token = begin_tool_recording()
-        try:
-            async with entry.lock:
-                response = await self._with_retries(
-                    lambda: agent.run(safe_message, session=entry.session)
-                )
-            return AgentResult(text=response.text, tool_calls=get_recorded_tool_calls())
-        finally:
-            end_tool_recording(token)
-            reset_request_context(context_token)
+        async with self._turn(session_id, request_context) as (agent, entry, timing):
+            safe_message = self._sanitize_input(message, request_context.principal)
+            response = await self._with_retries(
+                lambda: agent.run(safe_message, session=entry.session),
+                timing,
+            )
+            assert self._sessions is not None
+            await self._sessions.save(request_context.session_storage_key(session_id))
+            usage = getattr(response, "usage_details", None) or {}
+            return AgentResult(
+                text=response.text,
+                tool_calls=get_recorded_tool_calls(),
+                usage={
+                    k: int(usage.get(k, 0)) for k in ("input_token_count", "output_token_count")
+                },
+            )
 
     async def stream_chat(
         self,
@@ -181,40 +265,51 @@ class MicrosoftAgentRuntime:
         session_id: str,
         context: RequestContext | None = None,
     ) -> AsyncIterator[str]:
-        agent = self._new_agent()
-        assert self._sessions is not None
         request_context = context or RequestContext(Principal.anonymous())
-        safe_message = self._sanitize_input(message, request_context.principal)
-        entry = await self._sessions.get_or_create(
-            request_context.session_storage_key(session_id)
-        )
-        context_token = set_request_context(request_context)
-        token = begin_tool_recording()
         emitted = False
-        try:
-            async with entry.lock:
-                attempts = self.settings.deepseek_max_retries + 1
-                for attempt in range(attempts):
-                    try:
-                        async with asyncio.timeout(self.settings.deepseek_timeout_seconds):
-                            stream = agent.run(safe_message, session=entry.session, stream=True)
-                            async for update in stream:
-                                if update.text:
-                                    emitted = True
-                                    yield update.text
-                        return
-                    except TimeoutError as exc:
-                        if emitted or attempt == attempts - 1:
-                            raise AgentRequestTimeout("DeepSeek stream timed out") from exc
-                    except Exception as exc:
-                        if emitted or not _is_retryable(exc) or attempt == attempts - 1:
-                            raise AgentUpstreamError("DeepSeek stream failed") from exc
-                    delay = min(0.25 * (2**attempt), 2.0)
-                    logger.warning("Retrying DeepSeek stream", extra={"attempt": attempt + 2})
-                    await asyncio.sleep(delay)
-        finally:
-            end_tool_recording(token)
-            reset_request_context(context_token)
+        async with self._turn(session_id, request_context, stream=True) as (agent, entry, timing):
+            safe_message = self._sanitize_input(message, request_context.principal)
+            attempts = self.settings.gemini_max_retries + 1
+            for attempt in range(attempts):
+                try:
+                    timing.attempts += 1
+                    stream = agent.run(safe_message, session=entry.session, stream=True)
+                    async for update in stream:
+                        if update.text:
+                            timing.mark_first_delta()
+                            emitted = True
+                            yield update.text
+                    usage = {}
+                    if hasattr(stream, "get_final_response"):
+                        final = await stream.get_final_response()
+                        usage = getattr(final, "usage_details", None) or {}
+                    self._circuit.success()
+                    assert self._sessions is not None
+                    await self._sessions.save(request_context.session_storage_key(session_id))
+                    set_stream_result(
+                        get_recorded_tool_calls(),
+                        {
+                            k: int(usage.get(k, 0))
+                            for k in ("input_token_count", "output_token_count")
+                        },
+                    )
+                    return
+                except (TimeoutError, APITimeoutError) as exc:
+                    if emitted or get_recorded_tool_calls() or attempt == attempts - 1:
+                        self._circuit.failure()
+                        raise AgentRequestTimeout("Gemini stream timed out") from exc
+                except Exception as exc:
+                    if (
+                        emitted
+                        or get_recorded_tool_calls()
+                        or not _is_retryable(exc)
+                        or attempt == attempts - 1
+                    ):
+                        self._circuit.failure()
+                        raise AgentUpstreamError("Gemini stream failed") from exc
+                delay = min(0.25 * (2**attempt), 2.0)
+                logger.warning("Retrying Gemini stream", extra={"attempt": attempt + 2})
+                await asyncio.sleep(delay)
 
     def _sanitize_input(self, message: str, principal: Principal) -> str:
         try:
@@ -230,7 +325,7 @@ class MicrosoftAgentRuntime:
 
 def _is_retryable(exc: Exception) -> bool:
     """Retry timeouts, throttling, and server failures without depending on SDK internals."""
-    if isinstance(exc, (ConnectionError, TimeoutError)):
+    if isinstance(exc, (ConnectionError, TimeoutError, APIConnectionError)):
         return True
     status_code = getattr(exc, "status_code", None)
     if status_code == 429 or (isinstance(status_code, int) and status_code >= 500):

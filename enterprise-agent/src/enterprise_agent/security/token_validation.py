@@ -121,8 +121,7 @@ class EntraTokenValidator:
             return cached
 
         discovery_url = (
-            f"https://login.microsoftonline.com/{tenant_id}/v2.0/"
-            ".well-known/openid-configuration"
+            f"https://login.microsoftonline.com/{tenant_id}/v2.0/.well-known/openid-configuration"
         )
         try:
             if self._http_client is None:

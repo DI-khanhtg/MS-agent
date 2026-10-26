@@ -1,10 +1,11 @@
 """Backend-enforced read-only Work IQ path and operation policy."""
 
+import re
 from urllib.parse import parse_qsl, unquote, urlsplit
 
-ALLOWED_TOOLS = frozenset({"fetch", "get_schema", "search_paths"})
+ALLOWED_TOOLS = frozenset({"fetch", "fetch_blob", "get_schema", "search_paths"})
 ALLOWED_WRITE_TOOLS = frozenset({"create_entity", "update_entity", "do_action"})
-ALLOWED_PATH_PREFIXES = ("/me/", "/users/", "/sites/")
+ALLOWED_PATH_PREFIXES = ("/me/", "/users/", "/sites/", "/drives/")
 BLOCKED_PATH_SEGMENTS = ("/authentication/", "/serviceprincipals/")
 BLOCKED_QUERY_PARAMETERS = frozenset({"$skip", "$skiptoken"})
 MAX_ENTITY_URLS = 10
@@ -64,6 +65,25 @@ def validate_schema_request(path: str, operation_type: str) -> tuple[str, str]:
     if operation_type.casefold() != "fetch":
         raise WorkIQPolicyError("Only fetch schemas are allowed")
     return validate_read_path(path), "fetch"
+
+
+def validate_document_path(path: str) -> str:
+    """Resolve a known drive item route to its binary content endpoint."""
+    split = urlsplit(validate_read_path(path))
+    resource = split.path.rstrip("/")
+    # Only normalize resolved item IDs, never collections or arbitrary API routes.
+    pattern = r"/(?:me/drive|(?:users|sites)/[^/]+/drive|drives/[^/]+)/items/[^/]+"
+    item_path = resource if re.fullmatch(pattern, resource) else resource.removesuffix("/content")
+    decoded = unquote(item_path)
+    if (
+        split.query
+        or not re.fullmatch(pattern, item_path)
+        or not re.fullmatch(pattern, decoded)
+        or "[redacted]" in decoded.casefold()
+        or "[truncated]" in decoded.casefold()
+    ):
+        raise WorkIQPolicyError("A resolved drive item path without query parameters is required")
+    return item_path + "/content"
 
 
 def validate_path_filter(path_filter: str) -> str:

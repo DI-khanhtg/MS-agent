@@ -1,0 +1,12 @@
+.env
+.venv
+.git
+__pycache__
+.pytest_cache
+.ruff_cache
+data/*.db*
+data/*.jsonl*
+data/backups
+data/artifacts
+output
+tmp

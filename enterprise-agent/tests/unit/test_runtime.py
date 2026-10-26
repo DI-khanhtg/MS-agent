@@ -1,4 +1,5 @@
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 
@@ -8,10 +9,13 @@ from enterprise_agent.agent.runtime import (
     AgentConfigurationError,
     AgentEgressBlocked,
     AgentRequestTimeout,
+    AgentUpstreamError,
     MicrosoftAgentRuntime,
 )
 from enterprise_agent.config import Settings
 from enterprise_agent.security.identity import Principal, RequestContext
+from enterprise_agent.telemetry.operations import AuditLog, audit_sink, identity_hash
+from enterprise_agent.tools.recording import record_tool_call
 
 
 @dataclass
@@ -61,9 +65,9 @@ class FakeAgent:
 
 def settings(**overrides: object) -> Settings:
     values = {
-        "deepseek_api_key": "test-key",
-        "deepseek_max_retries": 2,
-        "deepseek_timeout_seconds": 1,
+        "gemini_api_key": "test-key",
+        "gemini_max_retries": 2,
+        "gemini_timeout_seconds": 1,
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)
@@ -81,6 +85,20 @@ async def test_runtime_retries_transient_failure() -> None:
 
 
 @pytest.mark.asyncio
+async def test_runtime_never_replays_turn_after_a_tool_call() -> None:
+    class ToolThenFailure(FakeAgent):
+        async def _chat(self, message):
+            record_tool_call("draft_email", {})
+            raise RetryableFailure("provider timed out after draft creation")
+
+    fake_agent = ToolThenFailure()
+    runtime = MicrosoftAgentRuntime(settings(), agent=fake_agent)
+    with pytest.raises(AgentUpstreamError):
+        await runtime.chat("Draft an email", "session-one")
+    assert fake_agent.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_runtime_streams_updates_after_retry() -> None:
     fake_agent = FakeAgent(failures=1)
     runtime = MicrosoftAgentRuntime(settings(), agent=fake_agent)
@@ -95,12 +113,182 @@ async def test_runtime_streams_updates_after_retry() -> None:
 async def test_runtime_times_out() -> None:
     fake_agent = FakeAgent(delay=0.05)
     runtime = MicrosoftAgentRuntime(
-        settings(deepseek_timeout_seconds=0.01, deepseek_max_retries=0),
+        settings(
+            agent_turn_timeout_seconds=0.01,
+            agent_synthesis_reserve_seconds=0,
+            gemini_max_retries=0,
+        ),
         agent=fake_agent,
     )
 
     with pytest.raises(AgentRequestTimeout):
         await runtime.chat("hello", "session-one")
+
+
+async def run_turn(runtime, stream=False, session="budget-test"):
+    if stream:
+        return "".join([part async for part in runtime.stream_chat("hello", session)])
+    return (await runtime.chat("hello", session)).text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_tool_turn_can_outlive_individual_model_request_timeout(stream):
+    class SlowAgent(FakeAgent):
+        async def _stream(self, message):
+            await asyncio.sleep(0.04)
+            yield FakeUpdate("answer: hello")
+
+    runtime = MicrosoftAgentRuntime(
+        settings(
+            gemini_timeout_seconds=0.01,
+            agent_turn_timeout_seconds=1,
+            agent_synthesis_reserve_seconds=0,
+            gemini_max_retries=0,
+        ),
+        agent=SlowAgent(delay=0.04),
+    )
+    assert await run_turn(runtime, stream) == "answer: hello"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_retry_backoff_cannot_extend_turn_deadline(stream):
+    agent = FakeAgent(failures=10)
+    runtime = MicrosoftAgentRuntime(
+        settings(
+            agent_turn_timeout_seconds=0.04,
+            agent_synthesis_reserve_seconds=0,
+        ),
+        agent=agent,
+    )
+    with pytest.raises(AgentRequestTimeout):
+        await run_turn(runtime, stream)
+    assert agent.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_session_queue_wait_is_inside_turn_deadline(stream):
+    agent = FakeAgent()
+    runtime = MicrosoftAgentRuntime(
+        settings(
+            agent_turn_timeout_seconds=0.03,
+            agent_synthesis_reserve_seconds=0,
+        ),
+        agent=agent,
+    )
+    runtime._ensure_initialized()
+    entry = await runtime._sessions.get_or_create("anonymous:anonymous:budget-test")
+    async with entry.lock:
+        with pytest.raises(AgentRequestTimeout):
+            # Safety watchdog makes a missing queue deadline fail instead of hanging.
+            async with asyncio.timeout(0.5):
+                await run_turn(runtime, stream)
+    assert agent.calls == 0
+    assert runtime._circuit.failures == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("outcome", ["ok", "error", "timeout", "cancelled"])
+async def test_turn_timing_records_outcome_without_private_content(tmp_path, stream, outcome):
+    started = asyncio.Event()
+
+    class ObservedAgent(FakeAgent):
+        async def _chat(self, message):
+            started.set()
+            if outcome == "error":
+                raise ValueError("private-provider-diagnostic")
+            if outcome in {"timeout", "cancelled"}:
+                await asyncio.sleep(10)
+            return FakeResponse(message)
+
+        async def _stream(self, message):
+            response = await self._chat(message)
+            yield FakeUpdate(response.text)
+
+    agent = ObservedAgent()
+    runtime = MicrosoftAgentRuntime(
+        settings(
+            agent_turn_timeout_seconds=0.05 if outcome == "timeout" else 1,
+            agent_synthesis_reserve_seconds=0,
+            gemini_max_retries=0,
+        ),
+        agent=agent,
+    )
+    sink = AuditLog(tmp_path / "audit.jsonl")
+    token = audit_sink.set(sink)
+
+    async def invoke():
+        if stream:
+            return [
+                part
+                async for part in runtime.stream_chat("private-user-content", "private-session")
+            ]
+        return await runtime.chat("private-user-content", "private-session")
+
+    try:
+        if outcome == "cancelled":
+            task = asyncio.create_task(invoke())
+            await started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        elif outcome == "ok":
+            await invoke()
+        else:
+            with pytest.raises(AgentRequestTimeout if outcome == "timeout" else AgentUpstreamError):
+                await invoke()
+    finally:
+        audit_sink.reset(token)
+    events = [json.loads(line) for line in sink.path.read_text().splitlines()]
+    turns = [event for event in events if event["event"] == "agent_turn"]
+    assert len(turns) == 1
+    assert turns[0]["status"] == outcome
+    assert turns[0]["stage"] == ("stream" if stream else "chat")
+    assert turns[0]["latency_ms"] >= 0
+    assert turns[0]["attempts"] == 1
+    assert ("first_delta_ms" in turns[0]) == (stream and outcome == "ok")
+    assert "private-user-content" not in sink.path.read_text()
+    assert "private-session" not in sink.path.read_text()
+    assert "private-provider-diagnostic" not in sink.path.read_text()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_turns_have_separate_timing_and_recorders(tmp_path):
+    class ToolAgent(FakeAgent):
+        async def _chat(self, message):
+            record_tool_call("probe", {})
+            await asyncio.sleep(0)
+            return FakeResponse("done")
+
+    runtime = MicrosoftAgentRuntime(settings(), agent=ToolAgent())
+    sink = AuditLog(tmp_path / "audit.jsonl")
+    token = audit_sink.set(sink)
+    contexts = [
+        request_context("private-tenant", "private-user-a"),
+        request_context("private-tenant", "private-user-b"),
+    ]
+    try:
+        results = await asyncio.gather(
+            *[runtime.chat("private-input", "same-session", context) for context in contexts]
+        )
+    finally:
+        audit_sink.reset(token)
+    events = [
+        json.loads(line)
+        for line in sink.path.read_text().splitlines()
+        if json.loads(line)["event"] == "agent_turn"
+    ]
+    assert len(events) == 2
+    assert {event["subject_hash"] for event in events} == {
+        identity_hash("private-tenant:private-user-a"),
+        identity_hash("private-tenant:private-user-b"),
+    }
+    assert all(event["attempts"] == 1 for event in events)
+    assert all(len(result.tool_calls) == 1 for result in results)
+    assert "private-" not in sink.path.read_text()
 
 
 def request_context(tenant_id: str, object_id: str) -> RequestContext:

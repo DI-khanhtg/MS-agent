@@ -16,7 +16,7 @@ PASS_RATE_THRESHOLD = 0.80
 
 @pytest.mark.live
 @pytest.mark.asyncio
-async def test_deepseek_combines_workiq_fabric_and_artifacts() -> None:
+async def test_gemini_combines_workiq_fabric_and_artifacts() -> None:
     if os.getenv("RUN_MULTI_SOURCE_LIVE_EVALS", "").casefold() != "true":
         pytest.skip("Set RUN_MULTI_SOURCE_LIVE_EVALS=true to run multi-source evaluations")
     incoming_token = os.getenv("FABRIC_USER_ACCESS_TOKEN", "")
@@ -24,15 +24,17 @@ async def test_deepseek_combines_workiq_fabric_and_artifacts() -> None:
         pytest.skip("Set FABRIC_USER_ACCESS_TOKEN in the process environment")
 
     settings = Settings()
+    if settings.runtime_mode != "gemini" or not settings.auth_enabled:
+        pytest.skip("Set RUNTIME_MODE=gemini and AUTH_ENABLED=true for live routing evaluations")
     required = {"workiq_read", "fabric_read", "artifact_generation"}
     if not required <= settings.tool_groups:
         pytest.skip("Enable Work IQ, Fabric, and artifact tool groups")
     if not (
-        settings.deepseek_is_configured
+        settings.gemini_is_configured
         and settings.workiq_obo_is_configured
         and settings.fabric_obo_is_configured
     ):
-        pytest.skip("Configure DeepSeek, Entra, Work IQ, and Fabric in .env")
+        pytest.skip("Configure Gemini, Entra, Work IQ, and Fabric in .env")
 
     principal = await EntraTokenValidator(settings).validate(incoming_token)
     runtime = create_app(settings=settings).state.agent_runtime

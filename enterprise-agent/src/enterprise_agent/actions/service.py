@@ -12,6 +12,7 @@ from enterprise_agent.actions.models import (
 from enterprise_agent.actions.policy import ApprovalPolicy
 from enterprise_agent.actions.store import InMemoryApprovalStore
 from enterprise_agent.security.identity import Principal
+from enterprise_agent.telemetry.operations import audit_event, identity_hash
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,8 @@ class ApprovalService:
 
 
 def _audit(event: str, record: ActionRecord, principal: Principal) -> None:
+    audit_event(event, action_id=record.action_id, action_type=record.action_type.value,
+                status=record.status.value, subject_hash=identity_hash(principal.isolation_key))
     logger.info(
         event,
         extra={
@@ -95,10 +98,9 @@ def _audit(event: str, record: ActionRecord, principal: Principal) -> None:
                 "action_id": record.action_id,
                 "action_type": record.action_type.value,
                 "status": record.status.value,
-                "subject_hash": hashlib.sha256(
-                    principal.isolation_key.encode("utf-8")
-                ).hexdigest()[:16],
+                "subject_hash": hashlib.sha256(principal.isolation_key.encode("utf-8")).hexdigest()[
+                    :16
+                ],
             }
         },
     )
-

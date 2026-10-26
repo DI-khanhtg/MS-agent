@@ -1,9 +1,17 @@
+import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from fastapi.testclient import TestClient
 
-from enterprise_agent.agent.runtime import AgentConfigurationError, AgentEgressBlocked, AgentResult
+from enterprise_agent.agent.runtime import (
+    AgentConfigurationError,
+    AgentEgressBlocked,
+    AgentResult,
+    MicrosoftAgentRuntime,
+)
 from enterprise_agent.api.app import create_app
 from enterprise_agent.config import Settings
 
@@ -27,7 +35,7 @@ class FakeRuntime:
 
 class UnconfiguredRuntime(FakeRuntime):
     async def chat(self, message: str, session_id: str, context: object = None) -> AgentResult:
-        raise AgentConfigurationError("DeepSeek is not configured")
+        raise AgentConfigurationError("Gemini is not configured")
 
 
 class EgressBlockedRuntime(FakeRuntime):
@@ -38,7 +46,7 @@ class EgressBlockedRuntime(FakeRuntime):
 def settings() -> Settings:
     return Settings(
         _env_file=None,
-        deepseek_api_key="PUT_YOUR_DEEPSEEK_API_KEY_HERE",
+        gemini_api_key="PUT_YOUR_GEMINI_API_KEY_HERE",
         artifact_tool_node_modules=Path("missing-artifact-tool"),
     )
 
@@ -53,8 +61,8 @@ def test_health_reports_configuration_without_secret() -> None:
         "status": "ok",
         "service": "enterprise-agent",
         "environment": "development",
-        "model": "deepseek-flash",
-        "deepseek_configured": False,
+        "model": "gemini-3.8-flash",
+        "gemini_configured": False,
         "auth_enabled": False,
         "entra_configured": False,
         "workiq_obo_configured": False,
@@ -130,3 +138,44 @@ def test_streaming_chat_uses_sse_events() -> None:
     assert '"session_id": "stream-session"' in body
     assert "event: delta" in body
     assert "event: done" in body
+
+
+@pytest.mark.parametrize("failure,code", [("timeout", "timeout"), ("provider", "upstream_error")])
+def test_real_runtime_stream_preserves_partial_text_and_never_finishes_on_error(
+    tmp_path, failure, code
+):
+    class PartialAgent:
+        calls = 0
+
+        def create_session(self, **kwargs):
+            return {}
+
+        def run(self, *args, **kwargs):
+            self.calls += 1
+            return self.updates()
+
+        async def updates(self):
+            yield SimpleNamespace(text="Partial answer")
+            if failure == "timeout":
+                await asyncio.sleep(10)
+            raise ConnectionError("private-provider-error")
+
+    config = Settings(
+        _env_file=None,
+        agent_turn_timeout_seconds=0.1,
+        agent_synthesis_reserve_seconds=0,
+        artifact_storage_path=tmp_path / "artifacts",
+        audit_log_path=tmp_path / "audit.jsonl",
+    )
+    agent = PartialAgent()
+    client = TestClient(
+        create_app(settings=config, runtime=MicrosoftAgentRuntime(config, agent=agent))
+    )
+    with client.stream("POST", "/api/chat/stream", json={"message": "hello"}) as response:
+        body = "".join(response.iter_text())
+    assert response.status_code == 200
+    assert "event: delta" in body and "Partial answer" in body
+    assert "event: error" in body and f'"code": "{code}"' in body
+    assert "event: done" not in body
+    assert "private-provider-error" not in body
+    assert agent.calls == 1

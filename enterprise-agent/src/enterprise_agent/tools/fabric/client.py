@@ -9,7 +9,9 @@ from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 from enterprise_agent.config import Settings
+from enterprise_agent.telemetry.operations import CircuitBreaker, CircuitOpenError
 from enterprise_agent.tools.fabric.policy import validate_fabric_question
+from enterprise_agent.tools.mcp_errors import is_retryable_mcp_error
 
 
 class FabricClientError(RuntimeError):
@@ -19,17 +21,30 @@ class FabricClientError(RuntimeError):
 class FabricDataAgentClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.circuit = CircuitBreaker(
+            settings.circuit_failure_threshold, settings.circuit_reset_seconds
+        )
 
     async def query(self, question: str, *, access_token: str) -> dict[str, Any]:
         validated_question = validate_fabric_question(question)
         if not self.settings.fabric_mcp_endpoint:
             raise FabricClientError("Fabric Data Agent MCP endpoint is not configured")
+        try:
+            with self.circuit.request():
+                return await self._query_with_retries(validated_question, access_token=access_token)
+        except CircuitOpenError as exc:
+            raise FabricClientError(str(exc)) from exc
+
+    async def _query_with_retries(self, question: str, *, access_token: str) -> dict[str, Any]:
         attempts = self.settings.fabric_max_retries + 1
         for attempt in range(attempts):
             try:
-                return await self._query_once(validated_question, access_token=access_token)
+                result = await self._query_once(question, access_token=access_token)
+                self.circuit.success()
+                return result
             except Exception as exc:
-                if not _is_retryable(exc) or attempt == attempts - 1:
+                if not is_retryable_mcp_error(exc) or attempt == attempts - 1:
+                    self.circuit.failure()
                     if isinstance(exc, FabricClientError):
                         raise
                     raise FabricClientError("Fabric Data Agent MCP request failed") from exc
@@ -80,14 +95,3 @@ def _question_argument(properties: dict[str, Any]) -> str:
         if candidate in normalized:
             return normalized[candidate]
     return next(iter(properties))
-
-
-def _is_retryable(exc: Exception) -> bool:
-    if isinstance(exc, (TimeoutError, httpx.TimeoutException, httpx.NetworkError)):
-        return True
-    status_code = getattr(exc, "status_code", None)
-    if status_code == 429 or (isinstance(status_code, int) and status_code >= 500):
-        return True
-    message = str(exc).casefold()
-    return "429" in message or "throttl" in message or "server error" in message
-

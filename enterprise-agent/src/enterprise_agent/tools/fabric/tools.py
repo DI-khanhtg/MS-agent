@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from enterprise_agent.agent.budget import read_window
 from enterprise_agent.security.egress import EgressGate
 from enterprise_agent.security.identity import get_request_context
 from enterprise_agent.tools.fabric.auth import FabricTokenProvider
@@ -30,12 +31,12 @@ class FabricReadTools:
         """
         validated_question = validate_fabric_question(question)
         record_tool_call("fabric_query", {"question": validated_question})
-        context = get_request_context()
-        token = await self.token_provider.get_token(context.principal)
-        result = await self.client.query(validated_question, access_token=token)
-        return self.egress_gate.enforce(
-            result,
-            source="fabric:data_agent",
-            principal=context.principal,
-        )
-
+        async with read_window("fabric"):
+            context = get_request_context()
+            token = await self.token_provider.get_token(context.principal)
+            result = await self.client.query(validated_question, access_token=token)
+            return self.egress_gate.enforce(
+                result,
+                source="fabric:data_agent",
+                principal=context.principal,
+            )

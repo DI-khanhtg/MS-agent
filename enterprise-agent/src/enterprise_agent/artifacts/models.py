@@ -96,7 +96,9 @@ class ArtifactSpec(BaseModel):
             raise ValueError("at least one section or table is required")
         if len(self.metadata) > 50:
             raise ValueError("metadata supports at most 50 entries")
-        if any(len(str(key)) > 100 or len(str(value)) > 1_000 for key, value in self.metadata.items()):
+        if any(
+            len(str(key)) > 100 or len(str(value)) > 1_000 for key, value in self.metadata.items()
+        ):
             raise ValueError("metadata keys or values exceed the supported size")
         if self.artifact_type is ArtifactFormat.PPTX:
             for section in self.sections:

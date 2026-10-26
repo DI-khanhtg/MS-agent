@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, field_validator
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=20_000)
     session_id: str | None = Field(default=None, min_length=1, max_length=128)
+    local_folder: str | None = Field(default=None, min_length=1, max_length=1024)
 
     @field_validator("message")
     @classmethod
@@ -26,6 +27,7 @@ class ChatResponse(BaseModel):
     session_id: str
     message: str
     tool_calls: list[ToolCall] = Field(default_factory=list)
+    usage: dict[str, int] = Field(default_factory=dict)
 
 
 class HealthResponse(BaseModel):
@@ -33,7 +35,7 @@ class HealthResponse(BaseModel):
     service: str = "enterprise-agent"
     environment: str
     model: str
-    deepseek_configured: bool
+    gemini_configured: bool
     auth_enabled: bool
     entra_configured: bool
     workiq_obo_configured: bool

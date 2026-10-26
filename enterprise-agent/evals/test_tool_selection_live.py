@@ -14,13 +14,13 @@ PASS_RATE_THRESHOLD = 0.80
 
 @pytest.mark.live
 @pytest.mark.asyncio
-async def test_deepseek_tool_selection_pass_rate() -> None:
+async def test_gemini_tool_selection_pass_rate() -> None:
     if os.getenv("RUN_LIVE_EVALS", "").lower() != "true":
         pytest.skip("Set RUN_LIVE_EVALS=true to allow paid external API calls")
 
     settings = Settings()
-    if not settings.deepseek_is_configured:
-        pytest.skip("Configure DEEPSEEK_API_KEY in .env before running live evaluations")
+    if not settings.gemini_is_configured:
+        pytest.skip("Configure GEMINI_API_KEY in .env before running live evaluations")
 
     cases = json.loads(DATASET_PATH.read_text(encoding="utf-8"))
     runtime = MicrosoftAgentRuntime(settings)
