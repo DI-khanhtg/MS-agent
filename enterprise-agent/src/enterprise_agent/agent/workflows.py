@@ -18,6 +18,22 @@ LOCAL FOLDERS
 
 WORKIQ_READ_WORKFLOWS = """
 MICROSOFT 365 READS
+- If the current message contains a Microsoft 365 link (link_id=...), first call
+  workiq_resolve_document_link(link_id=...) using that exact ID, then read the returned
+  document_id with workiq_read_document. You may also resolve an intact SharePoint/OneDrive
+  HTTPS url directly. Do not search the index when the user supplies a specific link.
+  Link resolution does not consume the indexed-search quota and still works after that cap.
+  The link_id expires at the end of this turn; ask the user to paste it again if unavailable.
+  Never reconstruct a masked URL, decode sharing tokens, scrape a browser or guess file IDs.
+  A Microsoft sharing link is not an unsupported external file merely because search failed.
+  Resolution returns metadata only (content_read=false); read actual content before summarizing
+  or creating an artifact. Cite web_url when available; never invent a missing source URL.
+  Report link errors at their real stage: denied access, missing/expired link, folder link,
+  unsupported service route, authentication or timeout. Do not silently broaden permissions.
+  Linked files above Work IQ's 4 MB binary cap use a separate delegated Graph download,
+  up to 20 MB. If Graph consent/access is missing, explain that the backend app needs
+  Microsoft Graph delegated Files.Read consent and the user's file access. Never call this
+  a missing-file, index-search or OCR failure; do not repeatedly retry it or grant permissions.
 - For a named file, topic or files shared by another person, first use
   workiq_search_documents with the filename/topic and owner. It searches the Microsoft 365
   index for accessible personal AND shared OneDrive/SharePoint documents, including other

@@ -81,6 +81,7 @@ async def _run_script(
     registry: ToolRegistry | None = None,
     enabled_tool_groups: str = "mock_read",
     context: RequestContext | None = None,
+    message: str = "scripted test",
 ) -> tuple[AgentResult, list[dict[str, Any]]]:
     requests: list[dict[str, Any]] = []
 
@@ -110,7 +111,7 @@ async def _run_script(
     )
     runtime = MicrosoftAgentRuntime(settings, agent=agent)
     try:
-        result = await runtime.chat("scripted test", "scripted-session", context)
+        result = await runtime.chat(message, "scripted-session", context)
     finally:
         await openai_client.close()
     return result, requests
@@ -415,11 +416,15 @@ async def test_workiq_result_is_redacted_before_second_model_request() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("lookup", ["search", "link", "large_link"])
 async def test_shared_pptx_search_read_and_word_export_through_real_framework(
-    document_files, tmp_path, monkeypatch
+    document_files, tmp_path, monkeypatch, lookup
 ):
+    import io
     from types import SimpleNamespace
+    from zipfile import ZIP_STORED, ZipFile
 
+    import httpx
     from docx import Document
 
     from enterprise_agent.artifacts.renderers import create_renderer_registry
@@ -429,17 +434,45 @@ async def test_shared_pptx_search_read_and_word_export_through_real_framework(
     from enterprise_agent.artifacts.tools import ArtifactTools
 
     filename, content, expected = document_files["pptx"]
+    if lookup == "large_link":
+        buffer = io.BytesIO(content)
+        with ZipFile(buffer, "a", compression=ZIP_STORED) as package:
+            package.writestr("ppt/media/test-unused.bin", b"x" * 5_000_001)
+        content = buffer.getvalue()
     path = "/drives/1234567890123456/items/9876543210"
     reference = "wiq_" + "a" * 32
     monkeypatch.setattr(
         "enterprise_agent.agent.budget.uuid4", lambda: SimpleNamespace(hex="a" * 32)
     )
     source = "https://company.sharepoint.com/shared/objectives.pptx"
+    sharing_url = (
+        "https://company-my.sharepoint.com/:p:/g/personal/owner/123456789012?e=privateShareToken"
+    )
     calls = []
 
     class Client:
         async def call_tool(self, name, arguments, *, access_token):
             calls.append((name, arguments))
+            if name == "fetch":
+                assert lookup in ("link", "large_link")
+                assert arguments["entityUrls"][0].startswith("/shares/u!")
+                return {
+                    "structuredContent": {
+                        "results": [
+                            {
+                                "statusCode": 200,
+                                "data": {
+                                    "id": "9876543210",
+                                    "parentReference": {"driveId": "1234567890123456"},
+                                    "name": filename,
+                                    "file": {},
+                                    "webUrl": source,
+                                    "size": len(content),
+                                },
+                            }
+                        ]
+                    }
+                }
             if name == "retrieve":
                 return {
                     "structuredContent": {
@@ -470,7 +503,29 @@ async def test_shared_pptx_search_read_and_word_export_through_real_framework(
     provider = AsyncMock()
     provider.get_token.return_value = "delegated-token"
     settings = Settings(_env_file=None)
-    reader = WorkIQReadTools(Client(), provider, EgressGate.from_yaml(settings.egress_policy_path))
+    graph_provider = AsyncMock()
+    graph_provider.get_token.return_value = "graph-only-token"
+    reader = WorkIQReadTools(
+        Client(),
+        provider,
+        EgressGate.from_yaml(settings.egress_policy_path),
+        graph_token_provider=graph_provider,
+    )
+    if lookup == "large_link":
+        actual_http_client = httpx.AsyncClient
+
+        def graph_handler(request):
+            assert request.url.host == "graph.microsoft.com"
+            assert request.headers["authorization"] == "Bearer graph-only-token"
+            return httpx.Response(200, content=content)
+
+        class GraphHTTPClient(actual_http_client):
+            def __init__(self, **kwargs):
+                super().__init__(transport=httpx.MockTransport(graph_handler), **kwargs)
+
+        monkeypatch.setattr(
+            "enterprise_agent.tools.workiq.download.httpx.AsyncClient", GraphHTTPClient
+        )
     store = ArtifactStore(tmp_path / "artifacts")
     artifacts = ArtifactTools(
         ArtifactService(
@@ -496,8 +551,12 @@ async def test_shared_pptx_search_read_and_word_export_through_real_framework(
         [
             [
                 _function_call(
-                    "workiq_search_documents",
-                    {"query": "objectives.pptx shared by Shared Owner"},
+                    "workiq_search_documents"
+                    if lookup == "search"
+                    else "workiq_resolve_document_link",
+                    {"query": "objectives.pptx shared by Shared Owner"}
+                    if lookup == "search"
+                    else {"link_id": reference},
                     1,
                 )
             ],
@@ -527,18 +586,35 @@ async def test_shared_pptx_search_read_and_word_export_through_real_framework(
         registry=create_default_registry(reader, artifact_tools=artifacts),
         enabled_tool_groups="workiq_read,artifact_generation",
         context=RequestContext(current),
+        message="Summarize this PowerPoint and create Word: " + sharing_url
+        if lookup != "search"
+        else "scripted test",
     )
     search = json.loads(next(m["content"] for m in requests[1]["messages"] if m["role"] == "tool"))[
         "data"
     ]
-    assert search["documents"][0]["document_id"] == reference
+    assert (
+        search["documents"][0]["document_id"] if lookup == "search" else search["document_id"]
+    ) == reference
     assert path not in json.dumps(requests)
+    if lookup != "search":
+        assert sharing_url not in json.dumps(requests)
+        assert "privateShareToken" not in json.dumps(requests)
+        assert "link_id=" + reference in json.dumps(requests[0])
     read = json.loads([m["content"] for m in requests[2]["messages"] if m["role"] == "tool"][-1])[
         "data"
     ]
     assert expected in read["text"]
     assert read["extraction"]["format"] == "pptx"
-    assert [name for name, _ in calls] == ["retrieve", "fetch_blob"]
+    assert [name for name, _ in calls] == (
+        ["fetch"]
+        if lookup == "large_link"
+        else [
+            "retrieve" if lookup == "search" else "fetch",
+            "fetch_blob",
+        ]
+    )
+    assert "graph-only-token" not in json.dumps(requests)
     records = store.list(current)
     assert len(records) == 1
     _, output_path = store.get(records[0].artifact_id, current)
@@ -546,7 +622,7 @@ async def test_shared_pptx_search_read_and_word_export_through_real_framework(
     assert expected in paragraphs
     assert source in paragraphs
     assert [call["name"] for call in result.tool_calls] == [
-        "workiq_search_documents",
+        "workiq_search_documents" if lookup == "search" else "workiq_resolve_document_link",
         "workiq_read_document",
         "create_artifact",
     ]

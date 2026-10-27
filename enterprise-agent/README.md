@@ -65,6 +65,8 @@ Hỗ trợ UTF-8 TXT/MD/CSV/JSON, DOCX, PPTX, PDF và XLSX. Nhập từ trình d
 
 File người khác chia sẻ được tìm qua chỉ mục OneDrive/SharePoint theo quyền tài khoản, không chỉ thư mục cá nhân. Agent ưu tiên tìm đúng file rồi đọc, tối đa hai truy vấn tìm kiếm Microsoft mỗi lượt chat, dùng lại kết quả tải/trích xuất trong lượt đó. Tính năng tìm kiếm cần tenant bật Work IQ `retrieve` và Copilot Credits; phí này riêng với Gemini. Xem [Work IQ setup](docs/WORKIQ_SETUP.md#indexed-discovery-of-personal-and-shared-documents).
 
+Bạn cũng có thể dán **link chia sẻ SharePoint/OneDrive** để đọc đúng file mà không tìm lại theo tên. File qua link trên4MB dùng đường Graph riêng, tối đa20MB; chủ app cần thêm Microsoft Graph **Delegated Files.Read** và consent cho app backend một lần. [Hướng dẫn cấu hình](docs/WORKIQ_SETUP.md#large-linked-files-and-microsoft-graph).
+
 ## Kiểm tra và tài liệu kỹ thuật
 
 ```powershell

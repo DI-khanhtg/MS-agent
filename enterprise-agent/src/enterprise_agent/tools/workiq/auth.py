@@ -23,6 +23,7 @@ class MsalOnBehalfOfTokenProvider:
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.scope = settings.workiq_scope
         self._applications: OrderedDict[str, msal.ConfidentialClientApplication] = OrderedDict()
         # A fixed lock pool bounds synchronization state as organizations come and go.
         self._locks = tuple(asyncio.Lock() for _ in range(64))
@@ -52,7 +53,7 @@ class MsalOnBehalfOfTokenProvider:
             result: dict[str, Any] = await asyncio.to_thread(
                 application.acquire_token_on_behalf_of,
                 user_assertion=principal.access_token,
-                scopes=[self.settings.workiq_scope],
+                scopes=[self.scope],
             )
         access_token = result.get("access_token")
         if not isinstance(access_token, str) or not access_token:
@@ -62,3 +63,11 @@ class MsalOnBehalfOfTokenProvider:
                 f"Work IQ token exchange failed ({error}; correlation_id={correlation_id})"
             )
         return access_token
+
+
+class MsalGraphFileTokenProvider(MsalOnBehalfOfTokenProvider):
+    """Graph-audience OBO using existing configured delegated consent; no permission grant."""
+
+    def __init__(self, settings: Settings) -> None:
+        super().__init__(settings)
+        self.scope = "https://graph.microsoft.com/.default"

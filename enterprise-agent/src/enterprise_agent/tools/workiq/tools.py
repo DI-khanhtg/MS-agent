@@ -26,6 +26,12 @@ from enterprise_agent.tools.document_reader import (
 from enterprise_agent.tools.recording import record_tool_call
 from enterprise_agent.tools.workiq.auth import WorkIQAuthenticationError, WorkIQTokenProvider
 from enterprise_agent.tools.workiq.client import WorkIQClientError, WorkIQMCPClient
+from enterprise_agent.tools.workiq.download import (
+    MAX_CLOUD_BYTES,
+    MicrosoftDocumentDownloader,
+    MicrosoftDownloadError,
+)
+from enterprise_agent.tools.workiq.link_resolver import ResolvedSharedFile, SharedLinkResolver
 from enterprise_agent.tools.workiq.policy import (
     WorkIQPolicyError,
     validate_document_path,
@@ -53,10 +59,26 @@ class WorkIQReadTools:
         client: WorkIQMCPClient,
         token_provider: WorkIQTokenProvider,
         egress_gate: EgressGate,
+        *,
+        graph_token_provider: WorkIQTokenProvider | None = None,
     ) -> None:
         self.client = client
         self.token_provider = token_provider
         self.egress_gate = egress_gate
+        self.link_resolver = SharedLinkResolver(
+            client, token_provider, egress_gate, f"workiq:{id(self)}"
+        )
+        self.document_downloader = MicrosoftDocumentDownloader(graph_token_provider)
+
+    async def workiq_resolve_document_link(self, url: str = "", link_id: str = "") -> dict:
+        """Resolve a user-provided Microsoft sharing link without indexed search.
+
+        Prefer link_id from the CURRENT user message; it privately retains the exact URL.
+        Alternatively provide an intact organizational SharePoint/OneDrive HTTPS url.
+        Pass returned document_id to workiq_read_document to read actual PDF/Office text.
+        Works independently of the search quota. Inspect errors; never guess masked URLs.
+        """
+        return await self.link_resolver.resolve(url, link_id)
 
     async def workiq_read_document(
         self,
@@ -79,15 +101,25 @@ class WorkIQReadTools:
         Omit filename with a document_id; missing extensions are resolved from metadata.
         """
         try:
+            large_file = False
+            source_size = None
             if document_id:
                 reference = resolve_source_reference(f"workiq:{id(self)}", document_id)
                 if not reference or path:
                     raise _DocumentReadError(
                         "invalid_document_reference",
-                        "Use a document_id returned by search in this turn, without path. "
+                        "Use a document_id returned by search or link resolution this turn, "
+                        "without path. "
                         "Search again for stale, masked or unknown references.",
                     )
-                path, original_name = reference
+                if isinstance(reference, ResolvedSharedFile):
+                    path, original_name = reference.path, reference.filename
+                    source_size = reference.size_bytes
+                    large_file = (
+                        reference.size_bytes is not None and reference.size_bytes > 4_000_000
+                    )
+                else:
+                    path, original_name = reference
                 filename = filename or original_name
             validated = validate_document_path(path)
             if (
@@ -125,8 +157,8 @@ class WorkIQReadTools:
                             "convert legacy Office files first.",
                         )
                 document = await cached_source_read(
-                    (id(self), "document", validated, suffix),
-                    lambda: self._download_document(validated, suffix),
+                    (id(self), "document", validated, suffix, large_file),
+                    lambda: self._download_document(validated, suffix, large_file, source_size),
                 )
                 return self._document_window(document, validated, offset, max_chars)
         except WorkIQPolicyError:
@@ -137,6 +169,8 @@ class WorkIQReadTools:
                 "ending in /content, without query parameters. Do not guess masked IDs.",
             )
         except _DocumentReadError as exc:
+            return self._document_error(exc.code, str(exc))
+        except MicrosoftDownloadError as exc:
             return self._document_error(exc.code, str(exc))
         except DocumentExtractionError as exc:
             # The shared reader deliberately emits fixed diagnostics without document data.
@@ -172,7 +206,16 @@ class WorkIQReadTools:
             principal=get_request_context().principal,
         )
 
-    async def _download_document(self, validated: str, suffix: str) -> ExtractedDocument:
+    async def _download_document(
+        self, validated: str, suffix: str, large_file: bool = False, source_size: int | None = None
+    ) -> ExtractedDocument:
+        if large_file:
+            content = await self.document_downloader.download(
+                validated.removesuffix("/content"), source_size
+            )
+            return await asyncio.to_thread(
+                extract_document, content, suffix, max_source_bytes=MAX_CLOUD_BYTES
+            )
         context = get_request_context()
         token = await self.token_provider.get_token(context.principal)
         result = await self.client.call_tool("fetch_blob", {"path": validated}, access_token=token)

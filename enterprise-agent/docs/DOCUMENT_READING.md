@@ -34,6 +34,33 @@ Chức năng nhập local dùng trong development; bản production tiếp tục
 
 ## Tệp trên OneDrive/SharePoint
 
+Bạn có thể dán trực tiếp link chia sẻ, ví dụ:
+
+> Đọc file PowerPoint trong link SharePoint này, tóm tắt và tạo bản Word cho tôi.
+
+Agent dùng `workiq_resolve_document_link` để phân giải link thành file cụ thể, rồi đọc
+qua `workiq_read_document`. Không cần file xuất hiện trong chỉ mục tìm kiếm và không tiêu
+hai lượt tìm kiếm theo tên. Cần link HTTPS của SharePoint/OneDrive tổ chức hoặc `1drv.ms`;
+link thư mục được báo rõ để bạn chọn file cụ thể. Quyền file và chính sách tenant vẫn áp dụng.
+
+Trước khi gửi câu hỏi sang Gemini, backend thay link hợp lệ bằng `link_id` riêng trong lượt
+chat để token chia sẻ và ID số không bị gửi nguyên dạng hoặc bị che hỏng. Tối đa tám link
+được xử lý trong một lượt; các link vượt số này được thay bằng thông báo giới hạn. Mã hết
+hạn cuối lượt; khi cần đọc lại ở lượt sau, dán lại link. Link gốc trong tin nhắn người dùng
+vẫn chịu chính sách lưu lịch sử hiện có của ứng dụng.
+
+File đã phân giải có kích thước trên 4 MB dùng đường tải Graph riêng, tối đa **20 MB**,
+vì Work IQ `fetch_blob` có giới hạn mặc định 4 MB. Đường này cần **Microsoft Graph →
+Delegated → Files.Read** và consent trên **app backend có ID bằng `AZURE_CLIENT_ID`**.
+Không phải app SPA có `ENTRA_SPA_CLIENT_ID`. Xem [cấu hình tải file lớn](WORKIQ_SETUP.md#large-linked-files-and-microsoft-graph).
+Đăng nhập Microsoft thành công không tự cấp quyền API này.
+
+Đường tải Graph chỉ dùng token Graph tại `graph.microsoft.com`; token Work IQ không
+được dùng thay thế. Các bước chuyển hướng tải file được kiểm tra từng host, bỏ bearer và
+cookie, giới hạn số hop và số byte. URL tải tạm không gửi tới Gemini hay log HTTP.
+Giữ nguyên giới hạn 200 trang/slide, 50 MB Office giải nén và 100000 ký tự nguồn; PDF
+scan/ảnh vẫn chưa có OCR. File lớn vẫn đọc native PPTX/DOCX/XLSX, không tự chuyển sang PDF.
+
 Gửi yêu cầu kèm tên/vị trí tệp, ví dụ:
 
 > Tìm objectives.pptx trong OneDrive của tôi và tóm tắt từng slide.
@@ -50,7 +77,8 @@ Liệt kê tên tệp chưa phải là đọc nội dung. Quyền truy cập v�
 Adapter chỉ tải từ đường dẫn tài nguyên Microsoft365 được cho phép, không mở tùy ý
 download URL. Work IQ có giới hạn tải riêng (mặc định4MB, có thể khác theo tenant/path),
 theo [Microsoft tool reference](https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/work-iq/mcp/tool-reference#fetch_blob).
-Giới hạn bộ đọc phía ứng dụng là5MB dữ liệu nguồn; giới hạn thấp hơn vẫn áp dụng.
+Giới hạn mặc định bộ đọc là5MB dữ liệu nguồn; file đã phân giải qua link dùng đường Graph
+có thể tới20MB. Giới hạn thấp hơn của từng đường tải vẫn áp dụng. Upload trình duyệt giữ2MB.
 
 ## Phạm vi nội dung và giới hạn
 

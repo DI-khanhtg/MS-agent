@@ -46,6 +46,49 @@ reflect indexing/coverage and must not be reported as proof of missing permissio
 a returned validated owner-drive item reference to read actual content; do not guess IDs.
 See [Microsoft's retrieve contract and prerequisites](https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/work-iq/mcp/retrieve).
 
+## Large linked files and Microsoft Graph
+
+Sharing links are resolved through the existing delegated Work IQ `fetch` shared-item read
+route. This was verified against an authenticated tenant. Small files use `fetch_blob`;
+linked files above 4 MB use Microsoft Graph v1.0 `/drives/{drive}/items/{item}/content`,
+with a separate Graph-audience on-behalf-of token and a 20 MB application cap.
+
+The operator configures the following once; ordinary users keep the same Microsoft login:
+
+1. Open **Entra → App registrations** and select the backend app whose Application ID
+   matches `AZURE_CLIENT_ID`, **not** the SPA app identified by `ENTRA_SPA_CLIENT_ID`.
+2. Open **API permissions → Add a permission → Microsoft Graph → Delegated permissions**.
+3. Add **Files.Read**. This is a delegated read permission; don't choose application-only
+   permissions or add file-write permissions for this download path.
+4. Complete consent for the organization. Use **Grant admin consent** with an authorized
+   administrator where required. OBO cannot open a downstream consent prompt itself;
+   multi-organization deployments need applicable consent in each user's tenant.
+5. Restart the backend, sign in again and resend the file link. No new Gemini key, Entra
+   app registration or browser Graph access token is needed.
+
+`MsalGraphFileTokenProvider` requests `https://graph.microsoft.com/.default`, using only
+permissions already configured/consented for the existing backend application. It does not
+grant permissions or repurpose the Work IQ token. `document_graph_consent_required` means
+the delegated Graph token cannot be acquired/configured; `document_graph_access_denied`
+means Graph rejected the request, so check consent, the user's file access and tenant policy.
+Do not fix either condition by increasing timeouts or repeatedly searching the index.
+
+Graph content may redirect to a short-lived Microsoft download URL. Only explicitly
+validated HTTPS SharePoint and Microsoft file hosts are followed, with no bearer/cookies
+on redirect hops, no ambient proxy credentials, bounded redirects/bytes and task-scoped
+redaction of HTTP transport logs. Raw download capabilities never enter model results.
+Parser expansion/page/text limits remain enforced, and local uploads keep their limits.
+
+Live verification on 2026-10-27 resolved the supplied shared PowerPoint successfully. Its
+9.5 MB source exceeded Work IQ's binary cap; an unauthenticated temporary download was
+rejected, and existing Graph consent lacked file scopes. Full live content validation
+therefore remains pending the operator's delegated file permission/consent. Offline tests
+cover both native small-file and Graph large-file reads through actual Office extraction
+and Word rendering. No Entra permission changes were performed by code.
+
+References: [Graph download contract and least permissions](https://learn.microsoft.com/en-us/graph/api/driveitem-get-content?view=graph-rest-1.0),
+[shared-item resolution](https://learn.microsoft.com/en-us/graph/api/shares-get?view=graph-rest-1.0).
+
 ## 2. Register/configure the client
 
 The web or Teams client must request an access token for the backend API's

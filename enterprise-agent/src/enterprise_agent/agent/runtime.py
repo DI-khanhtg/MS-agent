@@ -40,6 +40,7 @@ from enterprise_agent.tools.recording import (
     set_stream_result,
 )
 from enterprise_agent.tools.registry import ToolRegistry, create_default_registry
+from enterprise_agent.tools.workiq.links import protect_shared_links
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T")
@@ -316,6 +317,13 @@ class MicrosoftAgentRuntime:
 
     def _sanitize_input(self, message: str, principal: Principal) -> str:
         try:
+            if "workiq_read" in self.settings.tool_groups:
+                # Check the complete original before replacing private sharing URLs.
+                # Protect URLs before PII masking can corrupt numeric IDs or share tokens.
+                decision = self._egress_gate.evaluate(message)
+                if not decision.allowed and decision.reason == "prohibited_classification":
+                    self._egress_gate.enforce(message, source="user_input", principal=principal)
+                message = protect_shared_links(message)
             result = self._egress_gate.enforce(
                 message,
                 source="user_input",

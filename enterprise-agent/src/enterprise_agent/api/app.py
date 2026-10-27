@@ -49,7 +49,10 @@ from enterprise_agent.tools.fabric.tools import FabricReadTools
 from enterprise_agent.tools.knowledge.client import KnowledgeTools
 from enterprise_agent.tools.local.documents import LocalDocumentTools
 from enterprise_agent.tools.registry import create_default_registry
-from enterprise_agent.tools.workiq.auth import MsalOnBehalfOfTokenProvider
+from enterprise_agent.tools.workiq.auth import (
+    MsalGraphFileTokenProvider,
+    MsalOnBehalfOfTokenProvider,
+)
 from enterprise_agent.tools.workiq.client import WorkIQMCPClient
 from enterprise_agent.tools.workiq.tools import WorkIQReadTools
 from enterprise_agent.voice.transcriber import AzureSpeechTranscriber, Transcriber
@@ -151,6 +154,7 @@ def create_app(
             workiq_client,
             workiq_token_provider,
             egress_gate,
+            graph_token_provider=MsalGraphFileTokenProvider(app_settings),
         )
         fabric_tools = FabricReadTools(
             FabricDataAgentClient(app_settings),

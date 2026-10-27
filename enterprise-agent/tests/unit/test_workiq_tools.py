@@ -285,6 +285,7 @@ def test_registry_exposes_workiq_read_without_write_tools() -> None:
         "workiq_search_paths",
         "workiq_read_document",
         "workiq_search_documents",
+        "workiq_resolve_document_link",
     }
     assert not workiq_names & {"create_entity", "update_entity", "delete_entity", "do_action"}
 

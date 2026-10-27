@@ -74,6 +74,26 @@ def settings(**overrides: object) -> Settings:
 
 
 @pytest.mark.asyncio
+async def test_shared_link_is_kept_private_before_input_pii_masking():
+    runtime = MicrosoftAgentRuntime(settings(enabled_tool_groups="workiq_read"), agent=FakeAgent())
+    url = (
+        "https://company-my.sharepoint.com/:p:/g/personal/owner/123456789012?e=privateSharingToken"
+    )
+    result = await runtime.chat("Read " + url, "link-input")
+    assert "link_id=wiq_" in result.text
+    assert "privateSharingToken" not in result.text
+    assert "123456789012" not in result.text
+
+
+@pytest.mark.asyncio
+async def test_shared_link_protection_does_not_bypass_original_secret_detection():
+    runtime = MicrosoftAgentRuntime(settings(enabled_tool_groups="workiq_read"), agent=FakeAgent())
+    jwt = "eyJ" + "a" * 20 + "." + "b" * 20 + "." + "c" * 20
+    with pytest.raises(AgentEgressBlocked):
+        await runtime.chat("Read https://company.sharepoint.com/file?token=" + jwt, "blocked-link")
+
+
+@pytest.mark.asyncio
 async def test_runtime_retries_transient_failure() -> None:
     fake_agent = FakeAgent(failures=1)
     runtime = MicrosoftAgentRuntime(settings(), agent=fake_agent)

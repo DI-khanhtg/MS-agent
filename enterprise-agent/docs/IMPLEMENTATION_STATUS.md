@@ -1,5 +1,20 @@
 # Master plan implementation status
 
+## Shared links and large native documents (2026-10-27)
+
+The agent resolves organizational SharePoint/OneDrive links directly through Work IQ,
+without indexed search, and uses private current-turn link/document references. Authenticated
+live verification confirmed the supplied link resolves. For linked files above the MCP4MB
+binary cap, the backend uses separate delegated Graph OBO with existing consent and bounded
+native downloads up to20MB; browser/local upload caps and parser expansion limits remain.
+Graph bearer tokens are pinned to Graph; validated redirects carry no bearer/cookies, and
+HTTP transport logs are redacted for that task. Small files retain Work IQ blob reads.
+
+Deterministic integration verifies small/large shared PPTX → real text extraction → DOCX.
+The actual supplied9.5MB file's body remains pending operator Graph Files.Read consent;
+existing live Graph consent had no file scope. No claim of live content success is made.
+See [Work IQ large-file setup](WORKIQ_SETUP.md#large-linked-files-and-microsoft-graph).
+
 ## Indexed shared-document discovery (2026-10-27)
 
 Work IQ document search now uses read-only `retrieve` (`grounding`, OneDrive/SharePoint),

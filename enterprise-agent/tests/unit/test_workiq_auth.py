@@ -13,6 +13,30 @@ from enterprise_agent.tools.workiq.auth import (
 TENANT_ID = "11111111-1111-1111-1111-111111111111"
 
 
+@pytest.mark.asyncio
+async def test_graph_file_provider_uses_graph_audience_and_the_verified_user(monkeypatch):
+    from enterprise_agent.tools.workiq.auth import MsalGraphFileTokenProvider
+
+    captured = {}
+
+    class Application:
+        def __init__(self, **kwargs):
+            captured["authority"] = kwargs["authority"]
+
+        def acquire_token_on_behalf_of(self, **kwargs):
+            captured.update(kwargs)
+            return {"access_token": "graph-delegated-token"}
+
+    monkeypatch.setattr(
+        "enterprise_agent.tools.workiq.auth.msal.ConfidentialClientApplication", Application
+    )
+    provider = MsalGraphFileTokenProvider(settings())
+    assert await provider.get_token(principal()) == "graph-delegated-token"
+    assert captured["scopes"] == ["https://graph.microsoft.com/.default"]
+    assert captured["user_assertion"] == "incoming-user-assertion"
+    assert captured["authority"].endswith("/" + TENANT_ID)
+
+
 def settings(**overrides: Any) -> Settings:
     values = dict(
         auth_enabled=True,

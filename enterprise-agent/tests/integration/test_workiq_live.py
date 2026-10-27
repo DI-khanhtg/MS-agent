@@ -10,9 +10,54 @@ from enterprise_agent.security.identity import (
     set_request_context,
 )
 from enterprise_agent.security.token_validation import EntraTokenValidator
-from enterprise_agent.tools.workiq.auth import MsalOnBehalfOfTokenProvider
+from enterprise_agent.tools.workiq.auth import (
+    MsalGraphFileTokenProvider,
+    MsalOnBehalfOfTokenProvider,
+)
 from enterprise_agent.tools.workiq.client import WorkIQMCPClient
 from enterprise_agent.tools.workiq.tools import WorkIQReadTools
+
+
+@pytest.mark.live
+@pytest.mark.asyncio
+async def test_shared_document_link_reads_all_text_as_the_signed_in_user():
+    if os.getenv("RUN_WORKIQ_LINK_LIVE_EVALS", "").casefold() != "true":
+        pytest.skip("Enable RUN_WORKIQ_LINK_LIVE_EVALS for the explicitly selected shared file")
+    incoming = os.getenv("WORKIQ_USER_ACCESS_TOKEN", "")
+    url = os.getenv("WORKIQ_SHARED_DOCUMENT_URL", "")
+    if not incoming or not url:
+        pytest.skip("Provide backend user token and document URL in process environment only")
+    from enterprise_agent.agent.budget import turn_budget
+
+    settings = Settings()
+    principal = await EntraTokenValidator(settings).validate(incoming)
+    tools = WorkIQReadTools(
+        WorkIQMCPClient(settings),
+        MsalOnBehalfOfTokenProvider(settings),
+        EgressGate.from_yaml(settings.egress_policy_path),
+        graph_token_provider=MsalGraphFileTokenProvider(settings),
+    )
+    context = set_request_context(RequestContext(principal))
+    try:
+        with turn_budget(
+            settings.agent_turn_timeout_seconds, settings.agent_synthesis_reserve_seconds
+        ):
+            metadata = (await tools.workiq_resolve_document_link(url=url))["data"]
+            assert "error" not in metadata, metadata.get("error", {}).get("code")
+            offset, total = 0, 0
+            while offset is not None:
+                data = (
+                    await tools.workiq_read_document(
+                        document_id=metadata["document_id"], offset=offset, max_chars=14000
+                    )
+                )["data"]
+                assert "error" not in data, data.get("error", {}).get("code")
+                total += len(data["text"]) + sum(map(len, data["continuation"]))
+                assert data["next_offset"] is None or data["next_offset"] > offset
+                offset = data["next_offset"]
+            assert total > 0
+    finally:
+        reset_request_context(context)
 
 
 @pytest.mark.live
