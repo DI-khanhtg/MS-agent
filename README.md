@@ -15,7 +15,7 @@ Repository này chưa cung cấp URL dịch vụ đang chạy. `https://agent.ex
 
 ## Dành cho chủ dịch vụ
 
-Làm theo [Triển khai backend dùng chung](enterprise-agent/docs/SHARED_HOSTING.md): tạo hai app Entra hỗ trợ nhiều tổ chức, cấp quyền/consent, cấu hình secrets trên server và đặt ứng dụng sau HTTPS. Chủ dịch vụ chịu hạn mức và chi phí AI chung. Cấu hình này hỗ trợ một tiến trình/một replica với dữ liệu bền vững; chưa có điều phối nhiều replica.
+Làm theo [hướng dẫn host dùng chung](enterprise-agent/README.md#host-dùng-chung): tạo hai app Entra hỗ trợ nhiều tổ chức, cấp quyền/consent, cấu hình secrets trên server và đặt ứng dụng sau HTTPS. Chủ dịch vụ chịu hạn mức và chi phí AI chung. Cấu hình này hỗ trợ một tiến trình/một replica với dữ liệu bền vững; chưa có điều phối nhiều replica.
 
 Nếu cần lấy mã nguồn, cài [Git](https://git-scm.com/downloads) và [uv](https://docs.astral.sh/uv/getting-started/installation/):
 
@@ -26,7 +26,7 @@ uv run enterprise-agent setup --shared --output .env.shared
 docker compose --env-file .env.shared -f compose.shared.yaml up --build
 ```
 
-Hiện Enterprise Agent nằm ở nhánh `feat/gemini-microsoft-documents`; `main` vẫn là bản IQ samples cũ. Giữ tùy chọn `--branch` ở trên cho đến khi nhánh được merge. Nếu đã clone, từ thư mục repository chạy `git fetch origin`, `git switch feat/gemini-microsoft-documents`, rồi `git pull --ff-only` trước khi vào `enterprise-agent`.
+Các lệnh trên lấy nhánh `feat/gemini-microsoft-documents`, nơi chứa các cập nhật đang phát triển. `main` cũng đã có Enterprise Agent, nhưng có thể chưa có các thay đổi mới nhất của nhánh này. Nếu đã clone, từ thư mục repository chạy `git fetch origin`, `git switch feat/gemini-microsoft-documents`, rồi `git pull --ff-only` trước khi vào `enterprise-agent`.
 
 Wizard dành cho chủ dịch vụ, hỏi cấu hình AI, Entra và URL HTTPS công khai. `.env.shared` chứa secrets của server, được Git bỏ qua. Compose kèm backend và proxy Caddy tự quản lý HTTPS; chủ dịch vụ cần domain thật, DNS trỏ về server và mở cổng 80/443 theo hướng dẫn. Upload mặc định tắt; thêm `--uploads` vào wizard khi được tổ chức cho phép. Chưa có website được triển khai từ repository này. Chỉ đăng nhập và truy vấn thực bằng tài khoản đã được phép mới xác nhận được kết nối Microsoft 365.
 
@@ -34,7 +34,7 @@ Key Gemini và backend client secret chỉ ở server. Tệp được người d
 
 ## Chạy local hoặc thử demo
 
-Chạy backend riêng vẫn được hỗ trợ qua [Thiết lập local](enterprise-agent/docs/SELF_HOST_SETUP.md): dùng `setup`, `doctor`, `start --open`. Đây là lựa chọn cho chủ bản cài đặt local. Fabric, Speech và Foundry là các tích hợp tùy chọn.
+Chạy backend riêng vẫn được hỗ trợ qua [hướng dẫn chạy local](enterprise-agent/README.md#chạy-local): dùng `setup`, `doctor`, `start --open`. Đây là lựa chọn cho chủ bản cài đặt local. Fabric, Speech và Foundry là các tích hợp tùy chọn.
 
 Muốn xem giao diện trước khi có key hoặc cấu hình Microsoft:
 

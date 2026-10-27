@@ -108,6 +108,7 @@ class AuditLog:
             "stage",
             "attempts",
             "first_delta_ms",
+            "finish_reason",
         }
         safe = {k: v for k, v in metadata.items() if k in allowed}
         record = {"time": time.time(), "event": event, **safe}
@@ -142,6 +143,7 @@ class ExecutionTiming:
     status: str = "ok"
     attempts: int = 0
     first_delta_ms: float | None = None
+    finish_reason: str | None = None
 
     def mark_first_delta(self) -> None:
         if self.first_delta_ms is None:
@@ -181,6 +183,8 @@ def observe_execution(
             metadata["attempts"] = timing.attempts
         if timing.first_delta_ms is not None:
             metadata["first_delta_ms"] = timing.first_delta_ms
+        if timing.finish_reason is not None:
+            metadata["finish_reason"] = timing.finish_reason
         metadata.update(
             {
                 key: value

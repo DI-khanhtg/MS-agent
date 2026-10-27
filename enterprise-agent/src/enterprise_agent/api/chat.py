@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from enterprise_agent.agent.runtime import (
     AgentConfigurationError,
     AgentEgressBlocked,
+    AgentEmptyResponseError,
     AgentRequestTimeout,
     AgentRuntime,
     AgentUpstreamError,
@@ -33,6 +34,10 @@ from enterprise_agent.tools.recording import get_stream_result
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["chat"])
+EMPTY_RESPONSE_DETAIL = (
+    "Agent đã kết thúc nhưng không trả về nội dung. "
+    "Yêu cầu có thể chưa hoàn tất; hãy kiểm tra mục tài liệu trước khi thử lại."
+)
 
 
 class ClosingStreamingResponse(StreamingResponse):
@@ -106,12 +111,16 @@ async def _complete_chat(payload, request, runtime, principal) -> ChatResponse:
         result = await runtime.chat(
             _runtime_message(payload, request, principal), session_id, RequestContext(principal)
         )
+        if not result.text.strip():
+            raise AgentEmptyResponseError("The runtime returned no answer")
     except AgentConfigurationError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except AgentRequestTimeout as exc:
         raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT, detail=str(exc)) from exc
     except AgentEgressBlocked as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+    except AgentEmptyResponseError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=EMPTY_RESPONSE_DETAIL) from exc
     except AgentUpstreamError as exc:
         logger.error("Upstream model request failed", extra={"session_id": session_id})
         raise HTTPException(
@@ -157,6 +166,8 @@ async def stream_chat(
                 async for text in updates:
                     parts.append(text)
                     yield _sse("delta", {"text": text})
+            if not "".join(parts).strip():
+                raise AgentEmptyResponseError("The runtime returned no answer")
             details = get_stream_result()
             await _save_turn(
                 request,
@@ -174,6 +185,8 @@ async def stream_chat(
             yield _sse("error", {"code": "timeout", "detail": "The model request timed out."})
         except AgentEgressBlocked as exc:
             yield _sse("error", {"code": "egress_blocked", "detail": str(exc)})
+        except AgentEmptyResponseError:
+            yield _sse("error", {"code": "empty_response", "detail": EMPTY_RESPONSE_DETAIL})
         except AgentUpstreamError:
             logger.error("Upstream model stream failed", extra={"session_id": session_id})
             yield _sse(

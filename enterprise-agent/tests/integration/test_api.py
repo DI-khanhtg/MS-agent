@@ -140,6 +140,33 @@ def test_streaming_chat_uses_sse_events() -> None:
     assert "event: done" in body
 
 
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("text", ["", " \n\t"])
+def test_api_rejects_empty_answer_without_persisting_a_success(tmp_path, stream, text):
+    class EmptyRuntime(FakeRuntime):
+        async def chat(self, *args, **kwargs):
+            return AgentResult(text=text, tool_calls=[])
+
+        async def stream_chat(self, *args, **kwargs):
+            yield text
+
+    config = settings()
+    config.audit_log_path = tmp_path / "audit.jsonl"
+    config.database_path = tmp_path / "state.db"
+    client = TestClient(create_app(settings=config, runtime=EmptyRuntime()))
+    response = client.post(
+        "/api/chat/stream" if stream else "/api/chat",
+        json={"message": "hello", "session_id": "empty-answer"},
+    )
+    if stream:
+        assert '"code": "empty_response"' in response.text
+        assert "event: error" in response.text
+        assert "event: done" not in response.text
+    else:
+        assert response.status_code == 502
+    assert client.get("/api/sessions").json() == []
+
+
 @pytest.mark.parametrize("failure,code", [("timeout", "timeout"), ("provider", "upstream_error")])
 def test_real_runtime_stream_preserves_partial_text_and_never_finishes_on_error(
     tmp_path, failure, code

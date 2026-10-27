@@ -190,3 +190,48 @@ def test_wide_table_and_code_scroll_inside_mobile_message(app_url):
             "element => parseFloat(getComputedStyle(element).fontSize) >= 14"
         )
         browser.close()
+
+
+@pytest.mark.parametrize("streamed_text", ["", " \n\t"])
+def test_empty_completed_stream_shows_failure_and_clears_waiting_indicator(app_url, streamed_text):
+    with playwright.sync_playwright() as pw:
+        browser = pw.chromium.launch(channel="chrome", headless=True)
+        page = browser.new_page()
+        page.route(
+            "**/static/vendor/msal-browser.min.js",
+            lambda route: route.fulfill(content_type="text/javascript", body=MSAL_FIXTURE),
+        )
+        body = 'event: metadata\ndata: {"session_id":"empty-reply"}\n\n'
+        if streamed_text:
+            body += "event: delta\ndata: " + json.dumps({"text": streamed_text}) + "\n\n"
+        body += 'event: done\ndata: {"session_id":"empty-reply"}\n\n'
+        page.route(
+            "**/api/chat/stream",
+            lambda route: route.fulfill(content_type="text/event-stream", body=body),
+        )
+        page.goto(app_url)
+        playwright.expect(page.locator("#microsoft-login")).to_be_enabled()
+        page.locator("[data-open-connection]").last.click()
+        page.locator("#microsoft-login").click()
+        playwright.expect(page.locator("#account-name")).to_have_text("alice@example.test")
+        page.locator("#message").fill("Read my document")
+        page.locator("#message").press("Enter")
+        page.wait_for_function("() => !busy")
+        agent = page.locator(".bubble.agent")
+        playwright.expect(agent).to_contain_text("không trả về nội dung")
+        assert agent.evaluate("el => getComputedStyle(el, '::after').content") in ("none", "normal")
+        playwright.expect(page.locator("#send")).to_be_enabled()
+        browser.close()
+
+
+def test_historical_empty_answer_does_not_show_a_waiting_indicator(app_url):
+    with playwright.sync_playwright() as pw:
+        browser = pw.chromium.launch(channel="chrome", headless=True)
+        page = browser.new_page()
+        page.goto(app_url)
+        playwright.expect(page.locator("#microsoft-login")).to_be_enabled()
+        page.evaluate("bubble('agent', '')")
+        agent = page.locator(".bubble.agent")
+        playwright.expect(agent).to_contain_text("không trả về nội dung")
+        assert agent.evaluate("el => getComputedStyle(el, '::after').content") in ("none", "normal")
+        browser.close()

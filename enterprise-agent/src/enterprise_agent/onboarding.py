@@ -156,9 +156,7 @@ def setup_environment(
         if shared
         else "Local Microsoft 365 setup: use your own organization's two Entra registrations."
     )
-    output_fn(
-        "Guide: docs/SELF_HOST_SETUP.md. Secret inputs are hidden; no provider calls are made."
-    )
+    output_fn("Guide: README.md. Secret inputs are hidden; no provider calls are made.")
 
     def value(prompt: str, *, secret: bool = False, default: str = "") -> str:
         while True:

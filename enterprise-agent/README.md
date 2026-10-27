@@ -1,41 +1,52 @@
 # Enterprise Agent
 
-Chat với AI, tìm thông tin Microsoft 365 qua Work IQ và tổng hợp tài liệu thành Word, PDF, Excel, PowerPoint, Markdown hoặc JSON. Khi dùng dịch vụ chung, chủ dịch vụ cấu hình Gemini và Microsoft Entra trên server một lần; người dùng chỉ mở website HTTPS rồi đăng nhập Microsoft bằng tài khoản cơ quan/trường học.
+Ứng dụng chat dùng Gemini để đọc Microsoft 365 qua Work IQ, phân tích tài liệu và tạo Word, PDF, Excel, PowerPoint, Markdown hoặc JSON. Dịch vụ dùng chung được cấu hình một lần trên server; người dùng mở website HTTPS rồi đăng nhập Microsoft bằng tài khoản cơ quan/trường học.
 
-## Mở dịch vụ và bắt đầu
+## Dành cho người dùng
 
-1. Mở URL HTTPS do chủ dịch vụ gửi. Repository chưa có URL dịch vụ đã triển khai; `https://agent.example.com` là địa chỉ minh họa.
-2. Chọn **Kết nối Microsoft → Đăng nhập Microsoft**, cho phép popup và chọn tài khoản cơ quan/trường học.
-3. Hỏi thông tin bạn được phép đọc, ví dụ: “Tìm email mới nhất về dự án X và tóm tắt các việc cần làm.”
-4. Nếu dịch vụ bật tải tài liệu, dùng **kẹp giấy – Đính kèm tài liệu** hoặc **Chọn thư mục trên máy**, rồi yêu cầu tóm tắt hoặc tạo bản nháp.
-5. Tải kết quả trong **Tài liệu của bạn**. Kiểm tra nội dung, nguồn và các phần thiếu trước khi sử dụng.
+1. Mở địa chỉ HTTPS do chủ dịch vụ cung cấp.
+2. Chọn **Kết nối Microsoft → Đăng nhập Microsoft** và cho phép popup.
+3. Hỏi về tài liệu bạn được quyền đọc, hoặc dán link chia sẻ OneDrive/SharePoint.
+4. Yêu cầu tạo bản nháp và tải kết quả trong **Tài liệu của bạn**.
 
-Bạn không cần Gemini key, client secret, app Entra hay cài công cụ lập trình. Nếu Microsoft yêu cầu admin approval, nhờ quản trị viên tổ chức chấp thuận ứng dụng. Work IQ còn phụ thuộc quyền dữ liệu, policy, consent và điều kiện dịch vụ/licensing của tổ chức; đăng nhập thành công chưa chứng minh đọc được Microsoft 365.
+Người dùng dịch vụ chung không cần cài Python hoặc cung cấp API key. Quản trị viên tổ chức có thể cần chấp thuận ứng dụng. Đăng nhập thành công chưa xác nhận quyền đọc Microsoft 365; quyền tài khoản, consent và điều kiện dịch vụ của tổ chức vẫn áp dụng.
 
-Token đăng nhập chỉ nằm trong bộ nhớ của trang. Refresh cần đăng nhập lại; phiên Microsoft SSO có thể giúp thao tác nhanh hơn. Đăng xuất xóa dữ liệu đang hiển thị; lịch sử đã lưu trên server vẫn tách theo tenant và tài khoản.
+## Chuẩn bị mã nguồn
 
-## Chủ dịch vụ thiết lập một lần
-
-Xem [Triển khai backend dùng chung](docs/SHARED_HOSTING.md) cho Entra đa tổ chức, URL HTTPS, consent, Docker, lưu trữ và vận hành. Chủ dịch vụ giữ key/secrets ở backend và quản lý chi phí, hạn mức, sao lưu và thời hạn lưu dữ liệu.
-
-Lấy mã nguồn khi cần, với [Git](https://git-scm.com/downloads) và [uv](https://docs.astral.sh/uv/getting-started/installation/):
+Cài [Git](https://git-scm.com/downloads) và [uv](https://docs.astral.sh/uv/getting-started/installation/), rồi chạy:
 
 ```powershell
 git clone --branch feat/gemini-microsoft-documents https://github.com/DI-khanhtg/MS-agent.git
 cd MS-agent/enterprise-agent
-uv run enterprise-agent setup --shared --output .env.shared
-docker compose --env-file .env.shared -f compose.shared.yaml up --build
 ```
 
-Nhánh này đang chứa Enterprise Agent; `main` vẫn là IQ samples cũ. Nếu đã clone, ở thư mục repository chạy `git fetch origin`, `git switch feat/gemini-microsoft-documents`, `git pull --ff-only`, rồi `cd enterprise-agent`.
+Nếu đã clone, chạy các lệnh tiếp theo từ thư mục `enterprise-agent`. Các lệnh trên chọn nhánh phát triển `feat/gemini-microsoft-documents`; `main` cũng đã có ứng dụng nhưng có thể chưa có các cập nhật mới nhất của nhánh này.
 
-Wizard hỏi cấu hình AI, tenant chủ dịch vụ, hai app Entra, backend secret và URL HTTPS. File `.env.shared` chứa secrets, được Git bỏ qua. Compose kèm backend và proxy Caddy tự quản lý HTTPS khi domain thật trỏ về server và cổng 80/443 truy cập được. Chủ dịch vụ chuẩn bị DNS, firewall và callback Entra theo hướng dẫn trước khi gửi URL cho người dùng. Upload mặc định tắt; thêm `--uploads` vào wizard khi tổ chức cho phép. Chưa có website được triển khai từ repository này.
+## Cấu hình Microsoft Entra một lần
 
-Các tổ chức dùng cùng app do chủ dịch vụ đăng ký; quản trị viên từng tổ chức có thể cần cấp consent. Key Gemini và backend secret không gửi tới trình duyệt hay GitHub. Fabric, Speech và Foundry không phải điều kiện để bắt đầu.
+Chủ bản cài đặt cần Gemini API key và hai app registrations riêng trong [Microsoft Entra](https://entra.microsoft.com/): backend API và frontend SPA.
 
-## Chạy backend local riêng (tùy chọn)
+**Backend API:**
 
-Chủ bản cài đặt local làm theo [Thiết lập local](docs/SELF_HOST_SETUP.md), chuẩn bị key/app của mình rồi chạy trong `enterprise-agent`:
+1. Ghi Directory (tenant) ID và Application (client) ID.
+2. Trong **Expose an API**, đặt URI `api://<backend-app-id>` và tạo scope `access_as_user`.
+3. Trong manifest, đặt `api.requestedAccessTokenVersion` thành `2`.
+4. Tạo client secret và lưu **Value** ở backend.
+5. Thêm delegated permission `WorkIQAgent.Ask` của Work IQ và cấp consent theo chính sách tổ chức.
+6. Để tải file qua Microsoft Graph, thêm delegated permission `Files.Read` và hoàn tất consent cho backend. Token Graph dùng các quyền đã được consent; OBO không tự mở hộp thoại xin quyền.
+
+**Frontend SPA:**
+
+1. Ghi Application (client) ID của frontend.
+2. Trong **Authentication → Add a platform → Single-page application**, thêm `http://localhost:8000/auth/callback` cho local, hoặc `https://<hostname>/auth/callback` cho dịch vụ chung.
+3. Thêm delegated permission `api://<backend-app-id>/access_as_user` của backend.
+4. Trong backend **Expose an API → Authorized client applications**, thêm frontend ID và chọn scope `access_as_user`.
+
+SPA dùng Authorization Code + PKCE; không tạo client secret cho frontend hoặc bật implicit grant. Các giá trị tương ứng nằm trong [.env.example](.env.example) và [.env.shared.example](.env.shared.example).
+
+Khi phục vụ nhiều tổ chức, cả hai app cần hỗ trợ **Accounts in any organizational directory**. Đặt `AUTH_TENANT_MODE=organizations` và cấu hình `AUTH_ALLOWED_TENANT_IDS` theo các tổ chức được phép; để trống cho phép tổ chức hợp lệ có consent phù hợp. Consent của tenant chủ dịch vụ không thay thế consent ở tenant khác.
+
+## Chạy local
 
 ```powershell
 uv run enterprise-agent setup
@@ -43,51 +54,74 @@ uv run enterprise-agent doctor
 uv run enterprise-agent start --open
 ```
 
-Lệnh kiểm tra cấu hình trước khi khởi động và mở **http://localhost:8000**, khớp callback Microsoft. `uv run enterprise-agent` cũng khởi động ứng dụng. Khi phát triển, dùng `uv run enterprise-agent start --reload`. Dừng bằng Ctrl+C.
+Wizard tạo `.env` và không ghi đè file đã có. Nếu đã cấu hình, chỉ cần chạy `doctor` và `start --open`. Mở **http://localhost:8000**, khớp callback đã đăng ký. Khi phát triển, dùng `start --reload`; dừng bằng Ctrl+C.
 
-Chi tiết callback, đăng nhập và nhập thư mục local: [Đăng nhập Microsoft local](docs/MICROSOFT_LOGIN.md).
-
-## Thử trước khi có key
+Thử giao diện với dữ liệu mẫu, không cần key hoặc đăng nhập:
 
 ```powershell
 uv run enterprise-agent demo --open
 ```
 
-Demo không cần `.env` hay key, chỉ thay cấu hình của tiến trình đang chạy và giữ nguyên `.env` thật. Nó dùng dữ liệu mẫu và kết quả xác định, không gọi Gemini hoặc Microsoft IQ; auth, Speech, telemetry và kết nối database từ xa đều bị tắt. Demo lưu riêng tại `data/demo.db`, `data/artifacts/demo` và `data/demo-audit.jsonl`, tách khỏi lịch sử live ở `data/agent.db`. Chọn thư mục mẫu `Project-X` rồi **Tạo bản nháp**, hoặc thử các gợi ý chat. Demo không thay thế việc kiểm thử đăng nhập và dữ liệu thật. Xem [Local testing](docs/LOCAL_TESTING.md).
+Demo không gọi Gemini/Microsoft và dùng database, artifact cùng audit log riêng.
+
+## Host dùng chung
+
+```powershell
+uv run enterprise-agent setup --shared --output .env.shared
+uv run enterprise-agent doctor --env-file .env.shared
+```
+
+File `.env.shared` giữ key và secret của chủ dịch vụ. Giữ thống nhất ba địa chỉ:
+
+```dotenv
+PUBLIC_BASE_URL=https://agent.example.com
+ALLOWED_HOSTS=agent.example.com,localhost,127.0.0.1
+ENTRA_SPA_REDIRECT_URI=https://agent.example.com/auth/callback
+```
+
+`agent.example.com` là ví dụ; thay bằng hostname thật và thêm callback chính xác dưới nền tảng SPA trong Entra.
+
+Với domain trỏ về server, cổng 80/443 truy cập được và Docker đã cài:
+
+```powershell
+docker compose --env-file .env.shared -f compose.shared.yaml up --build
+```
+
+[Compose](compose.shared.yaml) chạy backend một worker và Caddy quản lý HTTPS. Volume giữ database và file đầu ra. Nếu chạy trực tiếp sau reverse proxy HTTPS hoặc tunnel:
+
+```powershell
+uv run enterprise-agent start --env-file .env.shared
+```
+
+Backend và proxy/tunnel phải luôn chạy. Nếu host trên máy cá nhân, máy cần bật và có Internet. Proxy phải hỗ trợ chat streaming SSE. Upload mặc định tắt; chủ dịch vụ có thể bật bằng wizard `--uploads` khi phù hợp.
 
 ## Dữ liệu và giới hạn
 
-Cấu hình mặc định dùng SQLite để giữ lịch sử/phiên/phê duyệt; với dịch vụ chung, dữ liệu nằm trên server và cần volume bền vững. Tài liệu nhập qua trình duyệt được sao chép vào vùng tài khoản của server; bỏ chọn hoặc đăng xuất không xóa bản sao hay lịch sử đã lưu. Tải tài liệu ở chế độ shared mặc định tắt; chủ dịch vụ có thể bật rõ ràng. `.env`, `.env.shared`, cơ sở dữ liệu và đầu ra runtime được Git bỏ qua. Không đưa các file này lên GitHub.
+- Microsoft 365 được đọc theo quyền người đăng nhập; ứng dụng không tự cấp quyền vào tài liệu người khác.
+- Tìm tài liệu cá nhân/được chia sẻ qua chỉ mục OneDrive/SharePoint cần Work IQ `retrieve` và điều kiện Copilot Credits của tenant. Mỗi lượt chat tối đa hai truy vấn tìm kiếm; chỉ mục không bảo đảm bao phủ mọi file.
+- Hỗ trợ TXT/MD/CSV/JSON UTF-8, DOCX, PPTX, PDF có chữ và XLSX. Chưa có OCR cho PDF scan; định dạng `.doc`, `.ppt`, `.xls` cần chuyển đổi.
+- Upload qua trình duyệt tối đa 2 MB/tệp; PDF tối đa 200 trang, PPTX tối đa 200 slide. File qua link trên 4 MB dùng Graph riêng, với giới hạn ứng dụng 20 MB.
+- Lịch sử, phiên và artifact nằm trên máy chạy backend, tách theo tenant/tài khoản. Upload tạo bản sao trên backend; đăng xuất không xóa dữ liệu đã lưu.
+- Nội dung được đọc có thể gửi tới Gemini sau bộ lọc egress. Chủ dịch vụ chịu chi phí Gemini và các dịch vụ Microsoft liên quan.
+- `.env`, `.env.shared`, database và đầu ra runtime được Git bỏ qua. Giữ key/secret ở backend.
 
-Nguồn được agent đọc có thể gửi tới Gemini sau khi qua bộ lọc egress; chỉ dùng dữ liệu tổ chức cho phép xử lý bằng dịch vụ bên ngoài. Gemini key và backend client secret nằm ở backend. Microsoft 365 dùng quyền delegated của người đăng nhập qua OBO; quyền của bạn và chính sách tenant vẫn áp dụng. Bản shared hiện chạy một worker/một replica; PostgreSQL được khuyến nghị cho vận hành lâu dài nhưng không tự tạo khả năng scale ngang hay HA.
+`docs` không cần cho vận hành. Log kỹ thuật nằm riêng trong `data/*.jsonl`, còn database chứa lịch sử chat; xóa log không xóa lịch sử chat. `LOG_LEVEL` điều chỉnh log console, không tắt audit log. Audit giúp chẩn đoán lỗi và theo dõi lượt gọi/chi phí, không lưu nguyên văn nội dung chat hay tài liệu.
 
-Hỗ trợ UTF-8 TXT/MD/CSV/JSON, DOCX, PPTX, PDF và XLSX. Nhập từ trình duyệt tối đa 2 MB/tệp; PDF tối đa 200 trang, PPTX tối đa 200 slide. Chưa có OCR hoặc phân tích ảnh/biểu đồ; `.doc`, `.ppt`, `.xls` cần chuyển sang định dạng mới. Xem [Đọc tài liệu](docs/DOCUMENT_READING.md) để biết giới hạn trích xuất và cách báo phần chưa đọc.
+## Kiểm tra và xử lý lỗi
 
-File người khác chia sẻ được tìm qua chỉ mục OneDrive/SharePoint theo quyền tài khoản, không chỉ thư mục cá nhân. Agent ưu tiên tìm đúng file rồi đọc, tối đa hai truy vấn tìm kiếm Microsoft mỗi lượt chat, dùng lại kết quả tải/trích xuất trong lượt đó. Tính năng tìm kiếm cần tenant bật Work IQ `retrieve` và Copilot Credits; phí này riêng với Gemini. Xem [Work IQ setup](docs/WORKIQ_SETUP.md#indexed-discovery-of-personal-and-shared-documents).
+`doctor` chỉ kiểm tra cấu hình offline. `/health` báo trạng thái server/cấu hình, không xác nhận Gemini key, consent, billing hoặc quyền dữ liệu thực tế.
 
-Bạn cũng có thể dán **link chia sẻ SharePoint/OneDrive** để đọc đúng file mà không tìm lại theo tên. File qua link trên4MB dùng đường Graph riêng, tối đa20MB; chủ app cần thêm Microsoft Graph **Delegated Files.Read** và consent cho app backend một lần. [Hướng dẫn cấu hình](docs/WORKIQ_SETUP.md#large-linked-files-and-microsoft-graph).
-
-## Kiểm tra và tài liệu kỹ thuật
-
-```powershell
-uv run enterprise-agent doctor
-```
-
-`doctor` kiểm tra cấu hình offline, không kiểm tra key thật, token, consent, billing hay quyền truy cập dịch vụ. `/health` là trạng thái cấu hình/liveness. Nếu đăng nhập được nhưng không đọc được Microsoft 365, kiểm tra [Work IQ setup](docs/WORKIQ_SETUP.md) và [xử lý lỗi đăng nhập](docs/MICROSOFT_LOGIN.md#kiểm-tra-và-xử-lý-lỗi).
-
-Với bản shared dùng file riêng, chạy `uv run enterprise-agent doctor --env-file .env.shared`; khởi động native bằng `uv run enterprise-agent start --env-file .env.shared` sau khi chuẩn bị HTTPS proxy theo [Shared hosting](docs/SHARED_HOSTING.md).
-
-| Tài liệu | Nội dung |
+| Hiện tượng | Cần kiểm tra |
 | --- | --- |
-| [Shared hosting](docs/SHARED_HOSTING.md) | Chủ dịch vụ cấu hình một lần, người dùng mở HTTPS và đăng nhập |
-| [Self-host setup](docs/SELF_HOST_SETUP.md) | App Entra, Gemini key, biến môi trường, Docker tùy chọn |
-| [Local testing](docs/LOCAL_TESTING.md) | Demo offline, kiểm thử và Speech tùy chọn |
-| [Work IQ](docs/WORKIQ_SETUP.md), [Fabric](docs/FABRIC_SETUP.md) | Consent, dữ liệu doanh nghiệp và kiểm thử live |
-| [Artifacts](docs/ARTIFACTS.md), [Actions](docs/ACTIONS.md) | Định dạng đầu ra và hành động cần phê duyệt |
-| [Operations](docs/OPERATIONS.md), [Security](docs/SECURITY.md) | Lưu trữ, sao lưu, hạn mức và ranh giới bảo mật |
-| [Implementation status](docs/IMPLEMENTATION_STATUS.md) | Phạm vi đã triển khai và phần cần xác minh live |
+| `AADSTS50011` | Callback Entra phải khớp protocol, hostname và `/auth/callback`, dưới nền tảng SPA |
+| `401` | Đăng nhập lại; trình duyệt cần token dành cho backend API |
+| `403` hoặc lỗi consent Graph | Consent của backend, quyền file của người dùng, tenant/client được phép |
+| Không tìm thấy file được chia sẻ | Tên/link đúng, quyền tài khoản, chỉ mục và Work IQ `retrieve`/billing |
+| Agent kết thúc không có nội dung | UI báo lỗi; kiểm tra tài liệu đã tạo trước khi thử lại, xem `finish_reason` trong audit log |
 
-Kiểm thử phát triển, chạy từ `enterprise-agent`:
+Token frontend nằm trong bộ nhớ trang. Refresh cần đăng nhập lại; phiên SSO của Microsoft có thể giúp thao tác nhanh hơn. Fabric, Speech và Foundry là tích hợp tùy chọn.
+
+Kiểm thử phát triển:
 
 ```powershell
 uv sync --extra dev
@@ -95,26 +129,4 @@ uv run pytest -m "not live" -q
 uv run ruff check .
 ```
 
-Live integrations cần cấu hình và xác minh bằng tài khoản thực, có thể phát sinh chi phí. Hướng dẫn kiểm thử Work IQ/Fabric nằm trong các tài liệu tương ứng; chỉ đưa access token vào biến môi trường của tiến trình, không lưu vào `.env` hoặc Git.
-
-Đánh giá Gemini sau khi cấu hình key thật:
-
-```powershell
-$env:RUN_LIVE_EVALS = "true"
-uv run pytest evals/test_tool_selection_live.py -m live -v
-```
-
-Kiểm thử Work IQ với access token dành cho backend API của người dùng đã đăng nhập:
-
-```powershell
-$env:RUN_WORKIQ_LIVE_EVALS = "true"
-$env:WORKIQ_USER_ACCESS_TOKEN = $accessToken
-uv run pytest tests/integration/test_workiq_live.py -m live -v
-uv run pytest evals/test_workiq_tool_selection_live.py -m live -v
-```
-
-Với Fabric đã được publish, dùng `RUN_FABRIC_LIVE_EVALS=true` và
-`FABRIC_USER_ACCESS_TOKEN` rồi chạy `tests/integration/test_fabric_live.py` và
-`evals/test_fabric_tool_selection_live.py` với `-m live -v`. Đánh giá nhiều nguồn còn cần
-`RUN_MULTI_SOURCE_LIVE_EVALS=true` và ba nhóm đọc Work IQ/Fabric/tạo artifact. Các test live
-không nằm trong kiểm tra `doctor` và không tự chạy trong lệnh khởi động.
+Test live trong `tests/integration` và `evals` cần bật biến `RUN_*_LIVE_EVALS`, cấu hình dịch vụ và token phù hợp; có thể phát sinh chi phí. Chỉ truyền access token qua môi trường của tiến trình, không lưu vào Git hoặc `.env`.

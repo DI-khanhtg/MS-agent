@@ -18,6 +18,7 @@ from enterprise_agent.security.identity import (
     set_request_context,
 )
 from enterprise_agent.storage.database import Database
+from enterprise_agent.telemetry.operations import AuditLog, audit_sink
 from enterprise_agent.tools.local.documents import LocalDocumentTools
 from enterprise_agent.tools.recording import get_stream_result, record_tool_call
 from enterprise_agent.tools.registry import ToolRegistry, create_default_registry
@@ -341,6 +342,80 @@ async def test_invalid_arguments_are_returned_to_model() -> None:
     tool_output = requests[1]["messages"][-1]
     assert tool_output["role"] == "tool"
     assert tool_output["content"] == "Error: Function failed."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("finish_reason", ["stop", "length", "malformed_function_call"])
+async def test_real_framework_empty_answer_after_tool_is_not_success(
+    tmp_path, stream, finish_reason
+):
+    from enterprise_agent.agent.runtime import AgentUpstreamError
+
+    requests = []
+    settings = Settings(
+        _env_file=None,
+        gemini_api_key="test-key",
+        gemini_max_retries=2,
+        enabled_tool_groups="mock_read",
+    )
+
+    async def handler(request):
+        requests.append(json.loads(request.content))
+        assert len(requests) <= 2, "An empty answer must not replay the tool turn"
+        first = len(requests) == 1
+        output = [_function_call("get_project_status", {"project_id": "alpha"}, 1)] if first else []
+        response = _response(output, len(requests))
+        response["choices"][0]["finish_reason"] = "tool_calls" if first else finish_reason
+        if not stream:
+            return httpx2.Response(200, json=response)
+        choice = response["choices"][0]
+        delta = choice["message"]
+        for index, call in enumerate(delta["tool_calls"]):
+            call["index"] = index
+        base = {k: v for k, v in response.items() if k not in ("choices", "usage")}
+        base["object"] = "chat.completion.chunk"
+        chunks = [
+            {**base, "choices": [{"index": 0, "delta": delta, "finish_reason": None}]},
+            {
+                **base,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": choice["finish_reason"]}],
+                "usage": response["usage"],
+            },
+        ]
+        body = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks) + "data: [DONE]\n\n"
+        return httpx2.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    client = AsyncOpenAI(
+        api_key="test-key",
+        base_url=settings.gemini_base_url,
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+    )
+    with patch("enterprise_agent.agent.factory.AsyncOpenAI", return_value=client):
+        framework_client = create_gemini_client(settings)
+    agent = create_enterprise_agent(settings, create_default_registry(), client=framework_client)
+    runtime = MicrosoftAgentRuntime(settings, agent=agent)
+    sink = AuditLog(tmp_path / "audit.jsonl")
+    token = audit_sink.set(sink)
+    try:
+        with pytest.raises(AgentUpstreamError) as error:
+            if stream:
+                _ = [part async for part in runtime.stream_chat("Read Alpha", "empty-turn")]
+            else:
+                await runtime.chat("Read Alpha", "empty-turn")
+        assert type(error.value).__name__ == "AgentEmptyResponseError"
+    finally:
+        audit_sink.reset(token)
+        await client.close()
+    assert len(requests) == 2
+    assert requests[1]["messages"][-1]["role"] == "tool"
+    turn = next(
+        json.loads(line)
+        for line in sink.path.read_text().splitlines()
+        if json.loads(line)["event"] == "agent_turn"
+    )
+    assert turn["status"] == "error"
+    assert turn["finish_reason"] == finish_reason
 
 
 @pytest.mark.asyncio

@@ -54,6 +54,10 @@ class AgentUpstreamError(RuntimeError):
     """The model provider failed after the configured retries."""
 
 
+class AgentEmptyResponseError(AgentUpstreamError):
+    """The model ended without an answer; replaying tools may duplicate effects."""
+
+
 class AgentRequestTimeout(RuntimeError):
     """The model request exceeded its deadline."""
 
@@ -181,6 +185,9 @@ class MicrosoftAgentRuntime:
                 result = await operation()
                 self._circuit.success()
                 return result
+            except AgentEmptyResponseError:
+                self._circuit.failure()
+                raise
             except (TimeoutError, APITimeoutError) as exc:
                 if get_recorded_tool_calls() or attempt == attempts - 1:
                     self._circuit.failure()
@@ -248,10 +255,16 @@ class MicrosoftAgentRuntime:
         request_context = context or RequestContext(Principal.anonymous())
         async with self._turn(session_id, request_context) as (agent, entry, timing):
             safe_message = self._sanitize_input(message, request_context.principal)
-            response = await self._with_retries(
-                lambda: agent.run(safe_message, session=entry.session),
-                timing,
-            )
+
+            async def run():
+                response = await agent.run(safe_message, session=entry.session)
+                timing.finish_reason = _finish_reason(response)
+                if not (getattr(response, "text", None) or "").strip():
+                    timing.finish_reason = timing.finish_reason or "unknown"
+                    raise AgentEmptyResponseError("The model returned no answer")
+                return response
+
+            response = await self._with_retries(run, timing)
             assert self._sessions is not None
             await self._sessions.save(request_context.session_storage_key(session_id))
             usage = getattr(response, "usage_details", None) or {}
@@ -277,16 +290,32 @@ class MicrosoftAgentRuntime:
             for attempt in range(attempts):
                 try:
                     timing.attempts += 1
+                    has_text = False
                     stream = agent.run(safe_message, session=entry.session, stream=True)
                     async for update in stream:
+                        reason = _finish_reason(update)
+                        if reason is not None:
+                            timing.finish_reason = reason
                         if update.text:
                             timing.mark_first_delta()
                             emitted = True
+                            has_text = has_text or bool(update.text.strip())
                             yield update.text
                     usage = {}
                     if hasattr(stream, "get_final_response"):
                         final = await stream.get_final_response()
                         usage = getattr(final, "usage_details", None) or {}
+                        reason = _finish_reason(final)
+                        if reason is not None:
+                            timing.finish_reason = reason
+                        final_text = getattr(final, "text", None) or ""
+                        if not has_text and final_text.strip():
+                            timing.mark_first_delta()
+                            emitted = has_text = True
+                            yield final_text
+                    if not has_text:
+                        timing.finish_reason = timing.finish_reason or "unknown"
+                        raise AgentEmptyResponseError("The model returned no answer")
                     self._circuit.success()
                     assert self._sessions is not None
                     await self._sessions.save(request_context.session_storage_key(session_id))
@@ -298,6 +327,9 @@ class MicrosoftAgentRuntime:
                         },
                     )
                     return
+                except AgentEmptyResponseError:
+                    self._circuit.failure()
+                    raise
                 except (TimeoutError, APITimeoutError) as exc:
                     if emitted or get_recorded_tool_calls() or attempt == attempts - 1:
                         self._circuit.failure()
@@ -332,6 +364,23 @@ class MicrosoftAgentRuntime:
         except EgressBlockedError as exc:
             raise AgentEgressBlocked(str(exc)) from exc
         return str(result["data"])
+
+
+def _finish_reason(response: Any) -> str | None:
+    """Keep provider diagnostics bounded and exclude arbitrary private strings."""
+    reason = getattr(response, "finish_reason", None)
+    if reason is None:
+        return None
+    allowed = {
+        "stop",
+        "length",
+        "tool_calls",
+        "function_call",
+        "content_filter",
+        "malformed_function_call",
+        "error",
+    }
+    return reason.lower() if isinstance(reason, str) and reason.lower() in allowed else "other"
 
 
 def _is_retryable(exc: Exception) -> bool:

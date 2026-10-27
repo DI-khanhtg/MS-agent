@@ -213,7 +213,9 @@ async function api(path, options = {}) {
     return response;
 }
 
-function bubble(role, text) {
+const EMPTY_RESPONSE_MESSAGE = "Agent đã kết thúc nhưng không trả về nội dung. Yêu cầu có thể chưa hoàn tất; hãy kiểm tra mục tài liệu trước khi thử lại.";
+
+function bubble(role, text, pending = false) {
     $("welcome").hidden = true;
     const row = element("div", "message-row " + role + "-row");
     const avatar = element("span", "message-avatar");
@@ -223,9 +225,13 @@ function bubble(role, text) {
     const content = element("div", "message-content");
     const node = document.createElement("div");
     node.className = "bubble " + role;
+    if (pending) {
+        node.classList.add("is-pending");
+        node.setAttribute("aria-busy", "true");
+    }
     if (role === "user") node.textContent = text;
     else {
-        ChatMarkdown.set(node, text);
+        ChatMarkdown.set(node, pending || String(text || "").trim() ? text : EMPTY_RESPONSE_MESSAGE);
         node.addEventListener("click", async event => {
             const link = event.target.closest?.("a[href]");
             if (!link) return;
@@ -314,7 +320,7 @@ async function send(message) {
     $("send").disabled = true;
     $("proposal").disabled = true;
     bubble("user", message);
-    const output = bubble("agent", "");
+    const output = bubble("agent", "", true);
     status("Agent đang xử lý…");
     try {
         const response = await api("/api/chat/stream", {
@@ -366,12 +372,15 @@ async function send(message) {
             if (done) break;
         }
         if (!completed && !failed) throw new Error("Kết nối bị gián đoạn. Vui lòng thử lại yêu cầu.");
+        if (!failed && !ChatMarkdown.text(output).trim()) throw new Error(EMPTY_RESPONSE_MESSAGE);
         if (!failed) status("Hoàn tất. Bạn có thể xem tài liệu ở mục Tài liệu của bạn.");
         await refresh();
     } catch (e) {
         ChatMarkdown.append(output, (ChatMarkdown.text(output) ? "\n\n" : "") + e.message);
         status(e.message, true);
     } finally {
+        output.classList.remove("is-pending");
+        output.setAttribute("aria-busy", "false");
         ChatMarkdown.flush(output);
         scrollToLatest();
         busy = false;
