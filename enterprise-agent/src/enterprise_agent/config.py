@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     )
 
     app_env: Literal["development", "staging", "production"] = "development"
+    deployment_mode: Literal["local", "shared"] = "local"
+    public_base_url: str = ""
     app_host: str = "0.0.0.0"
     app_port: int = Field(default=8000, ge=1, le=65535)
     log_level: str = "INFO"
@@ -44,6 +46,11 @@ class Settings(BaseSettings):
     max_tool_calls: int = Field(default=24, ge=1, le=100)
     max_history_messages: int = Field(default=40, ge=4, le=200)
     rate_limit_per_minute: int = Field(default=60, ge=1, le=10000)
+    shared_requests_per_minute: int = Field(default=600, ge=1, le=100000)
+    shared_chat_requests_per_minute: int = Field(default=120, ge=1, le=10000)
+    shared_max_concurrent_chats: int = Field(default=8, ge=1, le=100)
+    shared_max_concurrent_per_user: int = Field(default=2, ge=1, le=20)
+    document_uploads_enabled: bool = False
     circuit_failure_threshold: int = Field(default=5, ge=1, le=100)
     circuit_reset_seconds: float = Field(default=30, gt=0, le=600)
     audit_log_path: Path = PROJECT_ROOT / "data" / "audit.jsonl"
@@ -72,6 +79,7 @@ class Settings(BaseSettings):
     cost_currency: str = Field(default="USD", min_length=3, max_length=3)
 
     auth_enabled: bool = False
+    auth_tenant_mode: Literal["allowlist", "organizations"] = "allowlist"
     azure_tenant_id: str = "TO_BE_FILLED_LATER"
     azure_client_id: str = "TO_BE_FILLED_LATER"
     azure_client_secret: SecretStr = SecretStr("TO_BE_FILLED_LATER")
@@ -115,6 +123,29 @@ class Settings(BaseSettings):
     @classmethod
     def normalize_base_url(cls, value: str) -> str:
         return value.strip().rstrip("/")
+
+    @field_validator("public_base_url")
+    @classmethod
+    def normalize_public_origin(cls, value: str) -> str:
+        value = value.strip()
+        if value in PLACEHOLDER_VALUES:
+            return ""
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+            or (parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1"})
+        ):
+            raise ValueError("PUBLIC_BASE_URL must be an HTTPS origin or loopback HTTP origin")
+        host = parsed.hostname.encode("idna").decode("ascii").lower()
+        port = parsed.port
+        suffix = f":{port}" if port and port != (443 if parsed.scheme == "https" else 80) else ""
+        return f"{parsed.scheme}://{host}{suffix}"
 
     @field_validator("entra_spa_redirect_uri")
     @classmethod
@@ -218,6 +249,25 @@ class Settings(BaseSettings):
             return {self.azure_tenant_id}
         return set()
 
+    def tenant_is_allowed(self, tenant_id: str) -> bool:
+        """Only organization UUIDs enter multitenant discovery; local defaults stay closed."""
+        if self.auth_tenant_mode == "allowlist":
+            return tenant_id in self.allowed_tenant_ids
+        try:
+            canonical = str(UUID(tenant_id))
+        except (ValueError, TypeError, AttributeError):
+            return False
+        if canonical != tenant_id or canonical == "9188040d-6c67-4c5b-b112-36a304b66dad":
+            return False
+        approved = _csv_set(self.auth_allowed_tenant_ids)
+        return not approved or canonical in approved
+
+    @property
+    def local_document_access_enabled(self) -> bool:
+        if self.deployment_mode == "shared":
+            return self.auth_enabled and self.document_uploads_enabled
+        return self.app_env == "development"
+
     @property
     def required_scopes(self) -> set[str]:
         return _csv_set(self.entra_required_scopes)
@@ -232,7 +282,10 @@ class Settings(BaseSettings):
 
     @property
     def entra_is_configured(self) -> bool:
-        return bool(self.allowed_tenant_ids and self.entra_api_audiences)
+        return bool(
+            self.entra_api_audiences
+            and (self.auth_tenant_mode == "organizations" or self.allowed_tenant_ids)
+        )
 
     @property
     def workiq_obo_is_configured(self) -> bool:

@@ -1,0 +1,30 @@
+# A single backend behind Caddy HTTPS. DNS must point to this host; allow ports 80/443.
+services:
+  agent:
+    build: .
+    env_file: .env.shared
+    environment:
+      DEPLOYMENT_MODE: shared
+      APP_ENV: production
+      APP_HOST: 0.0.0.0
+      APP_PORT: "8000"
+      WEB_CONCURRENCY: "1"
+    command: ["enterprise-agent", "start"]
+    expose: ["8000"]
+    volumes: ["agent-data:/app/data"]
+    restart: unless-stopped
+  proxy:
+    image: caddy:2
+    environment:
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?Set PUBLIC_BASE_URL in .env.shared}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on: [agent]
+    restart: unless-stopped
+volumes:
+  agent-data:
+  caddy-data:
+  caddy-config:

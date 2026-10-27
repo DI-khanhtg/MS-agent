@@ -11,6 +11,7 @@ import webbrowser
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import uvicorn
@@ -48,7 +49,11 @@ def serve(settings: Settings, *, open_browser: bool = False, reload: bool = Fals
         if settings.auth_enabled and redirect.hostname in {"localhost", "127.0.0.1"}
         else "localhost"
     )
-    url = f"http://{host}:{settings.app_port}"
+    url = (
+        settings.public_base_url
+        if settings.deployment_mode == "shared"
+        else f"http://{host}:{settings.app_port}"
+    )
     with socket.socket() as probe:
         if os.name != "nt":
             # Match Uvicorn's reuse behavior when restarting after TCP TIME_WAIT.
@@ -65,20 +70,35 @@ def serve(settings: Settings, *, open_browser: bool = False, reload: bool = Fals
         host=settings.app_host,
         port=settings.app_port,
         reload=reload,
+        workers=1,
     )
 
 
 def _arguments(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command")
-    commands.add_parser("setup", help="Create a private Microsoft 365 .env interactively")
+    setup = commands.add_parser("setup", help="Create private owner configuration interactively")
+    setup.add_argument(
+        "--shared", action="store_true", help="Configure one centrally hosted backend"
+    )
+    setup.add_argument(
+        "--uploads", action="store_true", help="Opt into account-isolated server uploads"
+    )
+    setup.add_argument(
+        "--output", type=Path, help="New private env file; never overwrites an existing file"
+    )
     doctor = commands.add_parser("doctor", help="Check configuration offline; never prints secrets")
     doctor.add_argument("--json", action="store_true", help="Print machine-readable checks")
+    doctor.add_argument(
+        "--env-file", type=Path, help="Read an operator-selected private config file"
+    )
     for command, help_text in (("start", "Run local chat"), ("demo", "Try without keys or login")):
         child = commands.add_parser(command, help=help_text)
         child.add_argument("--open", action="store_true", dest="open_browser", help="Open browser")
         child.add_argument("--port", type=_port, help="Must match the registered SPA redirect")
         child.add_argument("--reload", action="store_true", help="Reload code during development")
+        if command == "start":
+            child.add_argument("--env-file", type=Path, help="Read private server configuration")
     return parser.parse_args(argv)
 
 
@@ -101,7 +121,9 @@ def _temporary_environment(overrides: dict[str, str]) -> Iterator[None]:
 def main(argv: list[str] | None = None) -> int:
     args = _arguments(argv)
     if args.command == "setup":
-        return setup_environment(PROJECT_ROOT / ".env")
+        return setup_environment(
+            args.output or PROJECT_ROOT / ".env", shared=args.shared, uploads=args.uploads
+        )
     overrides = {}
     if args.command == "demo":
         overrides = {
@@ -121,7 +143,13 @@ def main(argv: list[str] | None = None) -> int:
             "LOCAL_DOCUMENTS_ROOT": "data/documents",
             "ALLOWED_HOSTS": "localhost,127.0.0.1",
             "ENTERPRISE_AGENT_ENV_FILE": "",
+            "DEPLOYMENT_MODE": "local",
+            "AUTH_TENANT_MODE": "allowlist",
+            "DOCUMENT_UPLOADS_ENABLED": "false",
+            "PUBLIC_BASE_URL": "",
         }
+    if getattr(args, "env_file", None) is not None:
+        overrides["ENTERPRISE_AGENT_ENV_FILE"] = str(args.env_file.resolve())
     if getattr(args, "port", None) is not None:
         overrides["APP_PORT"] = str(args.port)
     with _temporary_environment(overrides):
@@ -132,6 +160,8 @@ def _configured_command(args: argparse.Namespace) -> int:
     settings = None
     try:
         env_file = os.environ.get("ENTERPRISE_AGENT_ENV_FILE")
+        if env_file and not Path(env_file).is_file():
+            raise FileNotFoundError("The selected server configuration file is missing")
         settings = Settings() if env_file is None else Settings(_env_file=env_file or None)
         if getattr(args, "port", None) is not None:
             settings = settings.model_copy(update={"app_port": args.port})
@@ -150,7 +180,7 @@ def _configured_command(args: argparse.Namespace) -> int:
             ConfigurationCheck(
                 "configuration_unreadable",
                 "error",
-                "Cannot read local configuration. Check .env and config/ permissions.",
+                "Cannot read the selected configuration file. Check its path and permissions.",
             )
         ]
     failed = any(check.level == "error" for check in report)

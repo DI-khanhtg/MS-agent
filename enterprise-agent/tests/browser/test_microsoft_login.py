@@ -266,6 +266,115 @@ def test_cancelled_login_keeps_protected_data_locked(app_url):
         browser.close()
 
 
+@pytest.mark.parametrize("uploads_enabled", [False, True])
+def test_shared_site_signin_hides_operator_setup_and_respects_upload_policy(
+    app_url, uploads_enabled
+):
+    with playwright.sync_playwright() as pw:
+        browser = pw.chromium.launch(channel="chrome", headless=True)
+        page = browser.new_page()
+        page.route(
+            "**/static/vendor/msal-browser.min.js",
+            lambda route: route.fulfill(content_type="text/javascript", body=MSAL_FIXTURE),
+        )
+
+        def shared_bootstrap(route):
+            # Identity is stubbed; use the fixture's HTTP origin so the browser
+            # can exercise account state without an external HTTPS deployment.
+            route.fulfill(json={
+                "enabled": True,
+                "configured": True,
+                "deployment_mode": "shared",
+                "client_id": FRONTEND,
+                "authority": "https://login.microsoftonline.com/organizations",
+                "redirect_uri": app_url + "/auth/callback",
+                "scopes": [f"api://{BACKEND}/access_as_user"],
+            })
+
+        def shared_config(route):
+            route.fulfill(json={
+                "deployment_mode": "shared",
+                "document_uploads_enabled": uploads_enabled,
+                "auth_enabled": True,
+                "tool_groups": ["local_read", "artifact_generation"],
+                "runtime_mode": "gemini",
+                "document_extensions": [".txt", ".md"],
+                "speech_configured": False,
+            })
+
+        page.route("**/api/auth/config", shared_bootstrap)
+        page.route("**/api/config", shared_config)
+        page.goto(app_url)
+        page.locator("[data-open-connection]").last.click()
+        playwright.expect(page.locator("#manual-connection")).to_be_hidden()
+        playwright.expect(page.locator("#login-setup")).to_be_hidden()
+        playwright.expect(page.locator("#folder-source")).to_be_hidden()
+        playwright.expect(page.locator("#connection-description")).to_contain_text(
+            "cơ quan hoặc trường học"
+        )
+        assert "ENTRA_" not in page.locator("body").inner_text()
+        assert "Redirect URI" not in page.locator("body").inner_text()
+        page.locator("#microsoft-login").click()
+        playwright.expect(page.locator("#account-name")).to_have_text("alice@example.test")
+        playwright.expect(page.locator("#microsoft-connection")).to_have_attribute(
+            "data-connected", "true"
+        )
+        playwright.expect(page.locator("#connection-symbol use")).to_have_attribute(
+            "href", "#i-connected"
+        )
+        assert page.evaluate("receivedMsalConfig.auth.authority").endswith("/organizations")
+        playwright.expect(page.locator("#folder-source")).to_be_hidden()
+        if uploads_enabled:
+            playwright.expect(page.locator("#choose-folder")).to_be_visible()
+            playwright.expect(page.locator("#attach-documents")).to_be_visible()
+            playwright.expect(page.locator("#upload-privacy")).to_contain_text("máy chủ chung")
+            playwright.expect(page.locator("#upload-privacy")).to_contain_text("AI")
+        else:
+            playwright.expect(page.locator("#choose-folder")).to_be_hidden()
+            playwright.expect(page.locator("#attach-documents")).to_be_hidden()
+            page.locator(".starter-card").first.click()
+            playwright.expect(page.locator("#message")).not_to_have_value("")
+        page.locator("[data-open-connection]").last.click()
+        page.locator("#microsoft-logout").click()
+        playwright.expect(page.locator("#microsoft-connection")).to_have_attribute(
+            "data-connected", "false"
+        )
+        playwright.expect(page.locator("#manual-connection")).to_be_hidden()
+        playwright.expect(page.locator("#folder-source")).to_be_hidden()
+        page.evaluate("""() => {
+            microsoftSession.client.loginPopup = async () => {
+                throw {errorMessage: 'AADSTS50011: redirect mismatch'};
+            };
+        }""")
+        page.locator("#microsoft-login").click()
+        playwright.expect(page.locator("#connection-status")).to_contain_text("quản trị")
+        playwright.expect(page.locator("#microsoft-connection")).to_have_attribute(
+            "data-connected", "false"
+        )
+        assert "Redirect URI" not in page.locator("body").inner_text()
+        browser.close()
+
+
+def test_shared_site_configuration_error_refers_user_to_operator(app_url):
+    with playwright.sync_playwright() as pw:
+        browser = pw.chromium.launch(channel="chrome", headless=True)
+        page = browser.new_page()
+        page.route(
+            "**/api/auth/config",
+            lambda route: route.fulfill(json={
+                "enabled": True, "configured": False, "deployment_mode": "shared"
+            }),
+        )
+        page.goto(app_url)
+        page.locator("[data-open-connection]").last.click()
+        playwright.expect(page.locator("#connection-status")).to_contain_text("quản trị")
+        playwright.expect(page.locator("#microsoft-login")).to_be_disabled()
+        playwright.expect(page.locator("#manual-connection")).to_be_hidden()
+        playwright.expect(page.locator("#login-setup")).to_be_hidden()
+        assert "ENTRA_" not in page.locator("body").inner_text()
+        browser.close()
+
+
 def test_pending_audio_close_cannot_submit_old_recording_as_new_account(app_url):
     with playwright.sync_playwright() as pw:
         browser = pw.chromium.launch(

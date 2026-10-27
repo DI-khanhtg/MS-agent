@@ -1,5 +1,7 @@
 # Đăng nhập Microsoft khi chạy local
 
+Nếu bạn dùng website HTTPS do chủ dịch vụ cung cấp, chỉ chọn **Kết nối Microsoft → Đăng nhập Microsoft** bằng tài khoản cơ quan/trường học. Không cần đăng ký callback, nhập token hay cấu hình key. Nếu cần admin approval, liên hệ quản trị viên tổ chức/chủ dịch vụ. Xem [Shared hosting](SHARED_HOSTING.md) cho phần triển khai của chủ dịch vụ. Các bước localhost trong tài liệu này chỉ áp dụng cho backend local riêng.
+
 Lần đầu clone repository, làm theo [Thiết lập backend local riêng](SELF_HOST_SETUP.md)
 để tạo hai app Entra của tổ chức, cấp consent và chạy wizard. Mỗi người dùng backend local
 và key riêng; người ở tổ chức khác cấu hình tenant của mình. Hướng dẫn bên dưới giải thích

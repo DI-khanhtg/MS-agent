@@ -1,26 +1,40 @@
 # Enterprise Agent
 
-Ứng dụng chat chạy trên máy của bạn: dùng Gemini để tổng hợp tài liệu, đọc Microsoft 365 qua Work IQ theo quyền tài khoản đã đăng nhập, và tạo Word, PDF, Excel, PowerPoint, Markdown hoặc JSON.
+Ứng dụng chat dùng Gemini để tổng hợp tài liệu, đọc Microsoft 365 qua Work IQ theo quyền tài khoản đã đăng nhập, và tạo Word, PDF, Excel, PowerPoint, Markdown hoặc JSON.
 
-Mỗi người clone repository, chạy **backend local riêng** và cấu hình **key/app của mình một lần**. Những lần sau chỉ cần chạy ứng dụng rồi đăng nhập Microsoft. Tài khoản cơ quan/trường học ở các tổ chức khác nhau dùng cấu hình tenant của tổ chức mình. Xem [hướng dẫn thiết lập đầy đủ](enterprise-agent/docs/SELF_HOST_SETUP.md) cho bước quản trị Microsoft Entra.
+Với **dịch vụ dùng chung**, chủ dịch vụ cấu hình backend, Gemini key và ứng dụng Microsoft Entra một lần. Người dùng mở địa chỉ HTTPS được cung cấp rồi đăng nhập Microsoft bằng tài khoản cơ quan/trường học. Người dùng không cần clone mã nguồn, cài Python hay nhập key. Các tổ chức khác có thể cần quản trị viên chấp thuận ứng dụng và quyền Work IQ trước khi sử dụng.
 
-## Bắt đầu
+## Dành cho người dùng
 
-Cài [Git](https://git-scm.com/downloads) và [uv](https://docs.astral.sh/uv/getting-started/installation/). uv tự tải Python phù hợp khi cần; không cần cài Node.js cho giao diện và các định dạng tài liệu mặc định. Xem [cách uv quản lý Python](https://docs.astral.sh/uv/guides/install-python/).
+1. Mở URL HTTPS do chủ dịch vụ cung cấp, chọn **Kết nối Microsoft → Đăng nhập Microsoft**.
+2. Dùng tài khoản cơ quan/trường học và cho phép popup nếu được hỏi. Nếu cần phê duyệt tổ chức, liên hệ quản trị viên.
+3. Hỏi về thông tin bạn được phép đọc hoặc tạo bản nháp. Nếu dịch vụ cho phép tải tài liệu, có thể chọn tệp/thư mục trên máy.
+4. Xem lại nguồn và nội dung trước khi tải hoặc chia sẻ kết quả.
+
+Repository này chưa cung cấp URL dịch vụ đang chạy. `https://agent.example.com` trong tài liệu chỉ là ví dụ; chủ dịch vụ phải triển khai tên miền và HTTPS. Xem [cách sử dụng và giới hạn](enterprise-agent/README.md).
+
+## Dành cho chủ dịch vụ
+
+Làm theo [Triển khai backend dùng chung](enterprise-agent/docs/SHARED_HOSTING.md): tạo hai app Entra hỗ trợ nhiều tổ chức, cấp quyền/consent, cấu hình secrets trên server và đặt ứng dụng sau HTTPS. Chủ dịch vụ chịu hạn mức và chi phí AI chung. Cấu hình này hỗ trợ một tiến trình/một replica với dữ liệu bền vững; chưa có điều phối nhiều replica.
+
+Nếu cần lấy mã nguồn, cài [Git](https://git-scm.com/downloads) và [uv](https://docs.astral.sh/uv/getting-started/installation/):
 
 ```powershell
 git clone --branch feat/gemini-microsoft-documents https://github.com/DI-khanhtg/MS-agent.git
 cd MS-agent/enterprise-agent
-uv run enterprise-agent setup
-uv run enterprise-agent doctor
-uv run enterprise-agent start --open
+uv run enterprise-agent setup --shared --output .env.shared
+docker compose --env-file .env.shared -f compose.shared.yaml up --build
 ```
 
 Hiện Enterprise Agent nằm ở nhánh `feat/gemini-microsoft-documents`; `main` vẫn là bản IQ samples cũ. Giữ tùy chọn `--branch` ở trên cho đến khi nhánh được merge. Nếu đã clone, từ thư mục repository chạy `git fetch origin`, `git switch feat/gemini-microsoft-documents`, rồi `git pull --ff-only` trước khi vào `enterprise-agent`.
 
-Lệnh `setup` hỏi Gemini API key, tenant ID, backend app ID/client secret và frontend SPA app ID. Key và secret được nhập ẩn, lưu trong `.env` được Git bỏ qua; wizard không ghi đè `.env` đã có. Chuẩn bị các giá trị theo [hướng dẫn cấu hình một lần](enterprise-agent/docs/SELF_HOST_SETUP.md). `doctor` chỉ kiểm tra cấu hình offline; đăng nhập và truy vấn thực mới xác nhận được dịch vụ hoạt động.
+Wizard dành cho chủ dịch vụ, hỏi cấu hình AI, Entra và URL HTTPS công khai. `.env.shared` chứa secrets của server, được Git bỏ qua. Compose kèm backend và proxy Caddy tự quản lý HTTPS; chủ dịch vụ cần domain thật, DNS trỏ về server và mở cổng 80/443 theo hướng dẫn. Upload mặc định tắt; thêm `--uploads` vào wizard khi được tổ chức cho phép. Chưa có website được triển khai từ repository này. Chỉ đăng nhập và truy vấn thực bằng tài khoản đã được phép mới xác nhận được kết nối Microsoft 365.
 
-Trình duyệt mở **http://localhost:8000**. Chọn **Kết nối Microsoft → Đăng nhập Microsoft**, dùng tài khoản cơ quan/trường học thuộc tenant đã cấu hình. Nếu bạn không được tạo app hoặc cấp consent, nhờ quản trị viên tổ chức hỗ trợ theo hướng dẫn; mỗi người dùng key của mình.
+Key Gemini và backend client secret chỉ ở server. Tệp được người dùng tải lên được sao chép tới server và nội dung được đọc có thể gửi tới dịch vụ AI. Lịch sử/tệp được tách theo tenant và tài khoản; chủ dịch vụ quản lý thời hạn lưu, sao lưu và xóa dữ liệu.
+
+## Chạy local hoặc thử demo
+
+Chạy backend riêng vẫn được hỗ trợ qua [Thiết lập local](enterprise-agent/docs/SELF_HOST_SETUP.md): dùng `setup`, `doctor`, `start --open`. Đây là lựa chọn cho chủ bản cài đặt local. Fabric, Speech và Foundry là các tích hợp tùy chọn.
 
 Muốn xem giao diện trước khi có key hoặc cấu hình Microsoft:
 
@@ -28,7 +42,7 @@ Muốn xem giao diện trước khi có key hoặc cấu hình Microsoft:
 uv run enterprise-agent demo --open
 ```
 
-Demo dùng dữ liệu mẫu và kết quả mẫu xác định, không gọi Gemini hoặc Microsoft IQ. Xem [README ứng dụng](enterprise-agent/README.md) để biết cách dùng, dữ liệu lưu trên máy và giới hạn đọc tài liệu. Fabric, Speech và Foundry là các tích hợp tùy chọn.
+Demo dùng dữ liệu mẫu và kết quả mẫu xác định, không gọi Gemini hoặc Microsoft IQ. Xem [README ứng dụng](enterprise-agent/README.md) để biết giới hạn đọc tài liệu và kiểm thử.
 
 ## Các sample khác và nguồn gốc
 

@@ -8,9 +8,32 @@ let sessionId = null,
 const microsoftSession = new MicrosoftSession();
 let workspaceGeneration = 0;
 let importedFolder = null;
+const sharedDeployment = () => (microsoftSession.settings?.deployment_mode || config.deployment_mode) === "shared";
+const uploadsEnabled = () => config.tool_groups?.includes("local_read")
+    && config.auth_enabled
+    && (config.document_uploads_enabled ?? !sharedDeployment());
+const operatorHelp = "Không thể đăng nhập lúc này. Hãy thử lại hoặc liên hệ quản trị viên dịch vụ; tổ chức của bạn có thể cần phê duyệt quyền truy cập.";
+function loginError(error) {
+    if (!sharedDeployment() || ["user_cancelled", "popup_window_error"].includes(error?.errorCode)) return microsoftLoginError(error);
+    return operatorHelp;
+}
+function configureDeployment() {
+    const shared = sharedDeployment();
+    const localSettings = microsoftSession.settings && !shared;
+    $("manual-connection").hidden = !localSettings;
+    $("login-setup").hidden = !localSettings;
+    $("folder-source").hidden = !localSettings;
+    $("connection-description").textContent = shared
+        ? "Dùng tài khoản Microsoft cơ quan hoặc trường học để truy cập những dữ liệu bạn được phép đọc. Tổ chức của bạn có thể cần quản trị viên phê duyệt."
+        : "Đăng nhập để đọc OneDrive, SharePoint và Microsoft 365 theo quyền tài khoản của bạn.";
+    if (shared) {
+        $("composer-context").textContent = "Không gian làm việc của bạn";
+        $("source-description").textContent = "Chọn định dạng để tạo bản nháp từ nội dung hội thoại và tài liệu của bạn.";
+    }
+}
 const headers = async () => {
     try {
-        const token = $("token").value.trim() || await microsoftSession.accessToken();
+        const token = (!sharedDeployment() && $("token").value.trim()) || await microsoftSession.accessToken();
         return token ? {Authorization: "Bearer " + token} : {};
     } catch (error) {
         setMicrosoftConnection(false);
@@ -128,7 +151,8 @@ function renderFiles(target, files) {
     }
 }
 function configureWorkspace() {
-    const local = config.tool_groups.includes("local_read");
+    const local = config.tool_groups.includes("local_read") && (!sharedDeployment() || uploadsEnabled());
+    configureDeployment();
     $("mode").hidden = config.runtime_mode !== "demo";
     $("mode").title = "Bản demo theo mẫu, không gọi LLM hay Microsoft IQ";
     $("workspace-kind").textContent = config.auth_enabled ? "Truy cập theo tài khoản Microsoft" : "Phiên làm việc local";
@@ -137,8 +161,9 @@ function configureWorkspace() {
     $("speechStatus").textContent = config.speech_configured ? "Azure Speech đã cấu hình. Hỗ trợ WAV 16 kHz, mono, tối đa 60 giây." : "Chưa kết nối Azure Speech. Bạn vẫn có thể nhập yêu cầu bằng văn bản.";
     $("folder").disabled = !local;
     $("folder").readOnly = config.auth_enabled;
-    $("choose-folder").hidden = !(local && config.auth_enabled);
-    $("attach-documents").hidden = !(local && config.auth_enabled);
+    $("choose-folder").hidden = !uploadsEnabled();
+    $("attach-documents").hidden = !uploadsEnabled();
+    $("upload-privacy").hidden = !(sharedDeployment() && uploadsEnabled());
     $("document-upload").accept = (config.document_extensions || []).join(",");
     if (!importedFolder) $("folder-hint").textContent = local && config.auth_enabled
         ? "Chọn thư mục trên máy để thêm tài liệu cho tài khoản này."
@@ -370,7 +395,7 @@ $("message").onkeydown = event => {
     }
 };
 $("proposal").onclick = () => {
-    if (config.tool_groups?.includes("local_read")) {
+    if (config.tool_groups?.includes("local_read") && (!sharedDeployment() || importedFolder)) {
         const folder = $("folder").value.trim();
         if (!folder) {
             status("Nhập thư mục nguồn trước khi tạo bản nháp.", true);
@@ -413,6 +438,7 @@ for (const button of document.querySelectorAll("[data-open-connection]")) button
     if (busy) return;
     $("connection-status").textContent = "";
     $("connection-status").className = "dialog-status";
+    if (sharedDeployment() && !microsoftSession.settings?.configured) connectionStatus(operatorHelp, true);
     $("connection-dialog").showModal();
 };
 $("close-connection").onclick = () => $("connection-dialog").close();
@@ -425,7 +451,7 @@ $("connection-dialog").addEventListener("click", event => {
 document.querySelectorAll(".starter-card").forEach(card => {
     card.onclick = () => {
         if (busy) return;
-        if (config.auth_enabled && config.tool_groups.includes("local_read") && !importedFolder) {
+        if (uploadsEnabled() && !importedFolder) {
             $("choose-folder").click();
             status("Chọn thư mục nguồn trước khi dùng gợi ý này.");
             return;
@@ -439,7 +465,7 @@ document.querySelectorAll(".starter-card").forEach(card => {
 $("create-from-library").onclick = () => {
     showView("chat");
     document.querySelector(".create-document").scrollIntoView({ block: "center" });
-    ($("folder").disabled ? $("format") : $("folder")).focus();
+    (sharedDeployment() || $("folder").disabled ? $("format") : $("folder")).focus();
 };
 $("menu-toggle").onclick = () => toggleSidebar(!$("sidebar").classList.contains("open"));
 $("sidebar-overlay").onclick = () => { toggleSidebar(false); $("menu-toggle").focus(); };
@@ -715,12 +741,15 @@ function showMicrosoftAccount() {
 
 function showSignedOut() {
     config = {};
+    configureDeployment();
     $("mode").hidden = true;
     setMicrosoftConnection(false);
     $("workspace-kind").textContent = "Đăng nhập Microsoft để bắt đầu";
     $("folder").disabled = true;
     $("choose-folder").hidden = true;
     $("attach-documents").hidden = true;
+    $("upload-privacy").hidden = true;
+    if (sharedDeployment()) $("folder-hint").textContent = "Đăng nhập để dùng nguồn dữ liệu được dịch vụ cho phép.";
     status("Đăng nhập Microsoft để truy cập tài liệu của bạn.");
     showMicrosoftAccount();
 }
@@ -745,7 +774,7 @@ $("microsoft-login").onclick = async () => {
         microsoftSession.account = null;
         clearWorkspace();
         showSignedOut();
-        connectionStatus(microsoftLoginError(error), true);
+        connectionStatus(loginError(error), true);
     } finally {
         busy = false;
         $("microsoft-login").disabled = false;
@@ -803,6 +832,7 @@ function showSelectedDocuments(files) {
 
 async function importDocuments(selected, folderSelection = false) {
     if (busy) return;
+    if (!uploadsEnabled()) return;
     if (!selected.length) return;
     const supported = new Set(config.document_extensions || []);
     const files = selected.filter(file => {
@@ -881,14 +911,21 @@ async function initializeWorkspace() {
     $("choose-folder").hidden = true;
     try {
         const settings = await microsoftSession.initialize();
+        configureDeployment();
         if (!settings.enabled) {
+            if (sharedDeployment()) {
+                showSignedOut();
+                connectionStatus(operatorHelp, true);
+                status("Dịch vụ chưa sẵn sàng. Hãy liên hệ quản trị viên dịch vụ.", true);
+                return;
+            }
             $("login-setup").textContent = "Máy chủ đang dùng phiên local. Đặt AUTH_ENABLED=true để bật đăng nhập Microsoft.";
             await refresh();
             return;
         }
         clearWorkspace();
         showSignedOut();
-        $("login-setup").textContent = settings.configured
+        $("login-setup").textContent = sharedDeployment() ? "" : settings.configured
             ? "Redirect URI đăng ký trong Entra (SPA): " + settings.redirect_uri
             : "Cần cấu hình ENTRA_SPA_CLIENT_ID và các thiết lập Entra trên máy chủ.";
         if (settings.configured) {
@@ -898,11 +935,15 @@ async function initializeWorkspace() {
                 $("login-origin").hidden = false;
             }
             $("microsoft-login").disabled = false;
+        } else if (sharedDeployment()) {
+            connectionStatus(operatorHelp, true);
+            status("Dịch vụ chưa sẵn sàng. Hãy liên hệ quản trị viên dịch vụ.", true);
+            return;
         }
         status("Đăng nhập Microsoft để truy cập tài liệu của bạn.");
     } catch (error) {
         showSignedOut();
-        connectionStatus(microsoftLoginError(error), true);
+        connectionStatus(loginError(error), true);
         status("Không khởi tạo được đăng nhập Microsoft.", true);
     }
 }

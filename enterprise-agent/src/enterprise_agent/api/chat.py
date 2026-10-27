@@ -3,9 +3,11 @@
 import json
 import logging
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from typing import Annotated
 from uuid import uuid4
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
@@ -19,6 +21,7 @@ from enterprise_agent.agent.runtime import (
 from enterprise_agent.api.auth import PrincipalDependency
 from enterprise_agent.api.schemas import ChatRequest, ChatResponse
 from enterprise_agent.artifacts.renderers import ArtifactRenderingError
+from enterprise_agent.hosting import chat_slot, check_chat_rate
 from enterprise_agent.security.identity import (
     RequestContext,
     reset_request_context,
@@ -30,6 +33,17 @@ from enterprise_agent.tools.recording import get_stream_result
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["chat"])
+
+
+class ClosingStreamingResponse(StreamingResponse):
+    async def stream_response(self, send) -> None:
+        try:
+            await super().stream_response(send)
+        finally:
+            # Close in the task that advanced the iterator: runtime ContextVars belong
+            # to that task. Shield cleanup from Starlette's disconnect cancellation.
+            with anyio.CancelScope(shield=True):
+                await self.body_iterator.aclose()
 
 
 def get_runtime(request: Request) -> AgentRuntime:
@@ -75,6 +89,18 @@ async def chat(
     runtime: RuntimeDependency,
     principal: PrincipalDependency,
 ) -> ChatResponse:
+    await check_chat_rate(request)
+    async with chat_slot(request, principal.isolation_key) as admitted:
+        if not admitted:
+            raise HTTPException(
+                503,
+                "Too many active chat requests. Wait for a turn to finish.",
+                headers={"Retry-After": "1"},
+            )
+        return await _complete_chat(payload, request, runtime, principal)
+
+
+async def _complete_chat(payload, request, runtime, principal) -> ChatResponse:
     session_id = payload.session_id or str(uuid4())
     try:
         result = await runtime.chat(
@@ -117,6 +143,7 @@ async def stream_chat(
     runtime: RuntimeDependency,
     principal: PrincipalDependency,
 ) -> StreamingResponse:
+    await check_chat_rate(request)
     session_id = payload.session_id or str(uuid4())
     message = _runtime_message(payload, request, principal)
 
@@ -124,13 +151,12 @@ async def stream_chat(
         parts = []
         yield _sse("metadata", {"session_id": session_id})
         try:
-            async for text in runtime.stream_chat(
-                message,
-                session_id,
-                RequestContext(principal),
-            ):
-                parts.append(text)
-                yield _sse("delta", {"text": text})
+            async with aclosing(
+                runtime.stream_chat(message, session_id, RequestContext(principal))
+            ) as updates:
+                async for text in updates:
+                    parts.append(text)
+                    yield _sse("delta", {"text": text})
             details = get_stream_result()
             await _save_turn(
                 request,
@@ -158,8 +184,23 @@ async def stream_chat(
         except (LocalDocumentError, ValueError, ArtifactRenderingError) as exc:
             yield _sse("error", {"code": "invalid_source", "detail": str(exc)})
 
-    return StreamingResponse(
-        events(),
+    async def admitted_events() -> AsyncIterator[str]:
+        async with chat_slot(request, principal.isolation_key) as admitted:
+            if not admitted:
+                yield _sse(
+                    "error",
+                    {
+                        "code": "server_busy",
+                        "detail": "Too many active chat requests. Wait for a turn to finish.",
+                    },
+                )
+                return
+            async with aclosing(events()) as stream:
+                async for event in stream:
+                    yield event
+
+    return ClosingStreamingResponse(
+        admitted_events(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

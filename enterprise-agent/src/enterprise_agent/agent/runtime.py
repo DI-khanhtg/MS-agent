@@ -144,7 +144,10 @@ class MicrosoftAgentRuntime:
                 not self.settings.auth_enabled or not self.settings.foundry_iq_is_configured
             ):
                 raise AgentConfigurationError("foundry_read requires auth and a configured KB")
-            if "local_read" in self.settings.tool_groups and self.settings.app_env != "development":
+            if (
+                "local_read" in self.settings.tool_groups
+                and not self.settings.local_document_access_enabled
+            ):
                 raise AgentConfigurationError("local_read is available only in development")
             try:
                 self._client = create_gemini_client(self.settings)

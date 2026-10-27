@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 from enterprise_agent.config import PLACEHOLDER_VALUES, Settings
+from enterprise_agent.hosting import shared_configuration_errors
 
 _TOOLS = {
     "mock_read",
@@ -40,6 +41,9 @@ def configuration_report(settings: Settings) -> list[ConfigurationCheck]:
     def add(code: str, message: str, level: str = "error") -> None:
         checks.append(ConfigurationCheck(code, level, message))
 
+    for message in shared_configuration_errors(settings):
+        add("shared_configuration", message)
+
     groups = settings.tool_groups
     if settings.runtime_mode == "gemini" and not settings.gemini_is_configured:
         add("gemini_key", "Set GEMINI_API_KEY. Run: uv run enterprise-agent setup")
@@ -64,7 +68,10 @@ def configuration_report(settings: Settings) -> list[ConfigurationCheck]:
                 "Use work/school tenant and application UUIDs; not common or wildcards.",
             )
         else:
-            if tenant not in settings.allowed_tenant_ids:
+            if (
+                settings.auth_tenant_mode == "allowlist"
+                and tenant not in settings.allowed_tenant_ids
+            ):
                 add("entra_tenant", "AZURE_TENANT_ID must be in AUTH_ALLOWED_TENANT_IDS.")
             if backend not in settings.entra_api_audiences:
                 add("entra_audience", "ENTRA_API_AUDIENCE must include the backend application ID.")
@@ -101,7 +108,7 @@ def configuration_report(settings: Settings) -> list[ConfigurationCheck]:
             "foundry_credentials",
             "Configure the shared Foundry knowledge source before enabling it.",
         )
-    if settings.app_env != "development" and "local_read" in groups:
+    if not settings.local_document_access_enabled and "local_read" in groups:
         add("local_environment", "Local folder imports require APP_ENV=development.")
     if settings.storage_backend != "database":
         add(
@@ -127,6 +134,8 @@ def configuration_report(settings: Settings) -> list[ConfigurationCheck]:
 def setup_environment(
     env_path: Path,
     *,
+    shared: bool = False,
+    uploads: bool = False,
     input_fn: Callable[[str], str] | None = None,
     secret_fn: Callable[[str], str] | None = None,
     output_fn: Callable[[str], None] = print,
@@ -142,7 +151,11 @@ def setup_environment(
         )
         return 2
     ask, ask_secret = input_fn or input, secret_fn or getpass.getpass
-    output_fn("Local Microsoft 365 setup: use your own organization's two Entra registrations.")
+    output_fn(
+        "Owner setup for a shared Microsoft service."
+        if shared
+        else "Local Microsoft 365 setup: use your own organization's two Entra registrations."
+    )
     output_fn(
         "Guide: docs/SELF_HOST_SETUP.md. Secret inputs are hidden; no provider calls are made."
     )
@@ -182,6 +195,16 @@ def setup_environment(
         backend = app_id("Backend Application (client) ID: ")
         frontend = app_id("Browser SPA Application (client) ID: ", different_from=backend)
         secret = value("Backend client secret VALUE (hidden, not Secret ID): ", secret=True)
+        if shared:
+            while True:
+                try:
+                    origin = Settings.normalize_public_origin(value("Public HTTPS service URL: "))
+                    parsed = urlsplit(origin)
+                    if parsed.scheme != "https" or parsed.hostname in {"localhost", "127.0.0.1"}:
+                        raise ValueError("Use your deployed public HTTPS service origin")
+                    break
+                except ValueError:
+                    output_fn("Enter a public HTTPS origin, for example https://agent.example.com.")
     except (EOFError, KeyboardInterrupt):
         output_fn("Setup cancelled; no configuration was written.")
         return 130
@@ -213,6 +236,22 @@ def setup_environment(
         "SPEECH_PROVIDER": "disabled",
         "REQUIRE_WRITE_APPROVAL": "true",
     }
+    if shared:
+        values.update(
+            {
+                "DEPLOYMENT_MODE": "shared",
+                "APP_ENV": "production",
+                "APP_HOST": "0.0.0.0",
+                "PUBLIC_BASE_URL": origin,
+                "AUTH_TENANT_MODE": "organizations",
+                "AUTH_ALLOWED_TENANT_IDS": "",
+                "ENTRA_SPA_REDIRECT_URI": origin + "/auth/callback",
+                "ALLOWED_HOSTS": parsed.hostname + ",localhost,127.0.0.1",
+                "DOCUMENT_UPLOADS_ENABLED": "true" if uploads else "false",
+                "ENABLED_TOOL_GROUPS": "workiq_read,artifact_generation"
+                + (",local_read" if uploads else ""),
+            }
+        )
     content = "# Private local configuration. Never commit this file.\n" + "".join(
         f"{name}={json.dumps(setting, ensure_ascii=False)}\n" for name, setting in values.items()
     )
@@ -230,6 +269,10 @@ def setup_environment(
             env_path.unlink(missing_ok=True)
         output_fn("Could not save .env; check directory permissions and available disk space.")
         return 2
-    output_fn("Saved private .env. Next: uv run enterprise-agent doctor")
-    output_fn("Then: uv run enterprise-agent start --open")
+    output_fn("Saved private server configuration." if shared else "Saved private .env.")
+    if env_path.name == ".env":
+        output_fn("Next: uv run enterprise-agent doctor")
+        output_fn("Then: uv run enterprise-agent start" + ("" if shared else " --open"))
+    else:
+        output_fn("Use doctor/start with --env-file pointing to the private file you selected.")
     return 0

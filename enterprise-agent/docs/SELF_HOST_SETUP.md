@@ -1,5 +1,7 @@
 # Thiết lập backend local riêng
 
+Hướng dẫn này dành cho người chủ động chạy backend riêng trên máy mình. Với dịch vụ dùng chung, người dùng chỉ mở URL HTTPS do chủ dịch vụ cung cấp rồi đăng nhập Microsoft, không cần tự nhập key hay tạo app. Chủ dịch vụ làm theo [Triển khai backend dùng chung](SHARED_HOSTING.md); các bước localhost bên dưới giữ dành cho local.
+
 Nếu Windows chưa có uv, cài bằng PowerShell theo [hướng dẫn chính thức](https://docs.astral.sh/uv/getting-started/installation/):
 
 ```powershell

@@ -2,6 +2,17 @@
 
 ## Trust boundaries
 
+Shared hosting is documented in [Shared backend](SHARED_HOSTING.md). It requires explicit
+approved SPA clients and delegated scopes. `AUTH_TENANT_MODE=organizations` accepts work/school
+tenant UUIDs with tenant-specific verified issuers; an optional `AUTH_ALLOWED_TENANT_IDS`
+restricts enrollment. It never skips signature, issuer, audience or client validation.
+Microsoft 365 authorization remains delegated to each signed-in user.
+
+Shared document uploads require the owner's explicit opt-in. Stored copies, history and
+artifacts are isolated by verified tenant/object ID on the server. API responses use
+`Cache-Control: no-store`; same-origin writes use the configured public HTTPS origin.
+Global/per-user admission limits are process-local and require one worker/replica.
+
 The API accepts only a Microsoft Entra access token intended for this backend. It validates
 the signature, issuer, audience, expiry, tenant, delegated scope, user object ID, and—when
 configured—the calling client ID. Request body fields are never used as identity.

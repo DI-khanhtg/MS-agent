@@ -1,5 +1,10 @@
 # Operations, backup and release
 
+For the centrally hosted Microsoft sign-in service, start with [Shared hosting](SHARED_HOSTING.md).
+The owner supplies server credentials and a public HTTPS origin; end users supply no env file.
+Use persistent data storage and a single worker/replica for the current SDK session and upload
+coordination. Aggregate request/chat admission limits are traffic controls, not a billing cap.
+
 ## Runtime boundaries
 
 - Model/tool deadlines, retries and circuit breakers cap failing upstream requests.
