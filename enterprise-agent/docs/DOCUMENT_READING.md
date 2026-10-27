@@ -38,6 +38,11 @@ Gửi yêu cầu kèm tên/vị trí tệp, ví dụ:
 
 > Tìm objectives.pptx trong OneDrive của tôi và tóm tắt từng slide.
 
+Với tên file/chủ đề hoặc file người khác chia sẻ, agent dùng `workiq_search_documents`
+để tìm trong chỉ mục OneDrive/SharePoint theo quyền của người đăng nhập. File có thể nằm
+trong drive của chủ sở hữu khác; danh sách thư mục gốc của bạn không phải mục **Đã chia sẻ**.
+Kết quả tìm kiếm không phải danh sách đầy đủ và có thể chưa phản ánh tài liệu mới được chia sẻ.
+
 Agent lấy metadata để xác định drive/item, sau đó dùng `workiq_read_document` để đọc
 bytes thực qua `fetch_blob`, áp dụng cùng bộ trích xuất và egress filter như tệp local.
 Liệt kê tên tệp chưa phải là đọc nội dung. Quyền truy cập vẫn theo tài khoản đã đăng nhập.
@@ -75,6 +80,35 @@ Kết quả tool có `source`, `total_chars`, `next_offset`, `empty` và `extrac
 `format`, `unit_count`, `coverage=text_only`, `warnings`. Agent phải theo các chunk còn
 lại, báo thiếu nội dung khi cần và giữ nguồn trích dẫn. Mỗi chunk tối đa3500 ký tự;
 giới hạn số tool call/deadline vẫn có thể khiến lượt đọc chỉ hoàn thành một phần.
+
+Để tóm tắt toàn bộ file nhanh hơn, công cụ OneDrive cho phép `max_chars=14000`. Nội dung
+trả về gồm `text` và các đoạn `continuation` theo thứ tự, mỗi đoạn không vượt giới hạn egress.
+Agent theo `next_offset` cho tới khi hết; giới hạn byte có thể làm một lượt trả ít hơn 14000
+ký tự, đặc biệt với Unicode. Không được coi phần trích dẫn tìm kiếm là đã đọc toàn bộ tài liệu.
+
+Kết quả tìm kiếm cấp `document_id` riêng trong lượt chat hiện tại. Agent dùng mã này để
+đọc file, kể cả khi ID số/tên file bị bộ lọc che; nếu tên thiếu phần mở rộng, backend tự
+lấy metadata tên file trước khi đọc. Mã hết hạn khi lượt chat kết thúc, cần tìm lại ở lượt sau.
+Văn bản được che thông tin cá nhân trước khi chia đoạn; `offset_basis=sanitized_text`
+nghĩa là `total_chars`/`next_offset` đếm ký tự sau khi che. Luôn theo offset được trả về.
+
+Tối ưu hiện tại không cần vector database hay sao chép cả kho tài liệu:
+
+- Tìm tên/chủ đề và người chia sẻ trước, chỉ tải file phù hợp; tối đa hai truy vấn Work IQ
+  thực mỗi lượt chat. Kết quả mặc định tối đa năm file, có thể chọn từ một đến mười.
+- Trong cùng lượt chat, truy vấn thành công giống nhau dùng lại kết quả; các đoạn của cùng
+  file dùng lại lần tải/trích xuất đầu tiên. Bộ nhớ tạm RAM giữ tối đa tám mục, tách theo
+  tenant/tài khoản/token và được bỏ khi lượt chat kết thúc hoặc bị hủy. Lượt sau kiểm tra
+  lại quyền và dữ liệu, không dùng cache của tài khoản khác.
+- Không tự gọi lại truy vấn tìm kiếm bị timeout để tránh phí lặp. Giới hạn số lượt tìm
+  không phải hạn mức tiền; kết quả và chi phí thực tế tùy dịch vụ Microsoft và Gemini.
+- Lỗi tìm kiếm/quyền/billing phải được báo rõ; kết quả rỗng không chứng minh file không
+  tồn tại hay người dùng không có quyền. Khi cần, cung cấp liên kết/vị trí file cụ thể.
+
+Tìm kiếm dùng `retrieve` (public preview), cần tenant bật Work IQ, consent delegated
+`WorkIQAgent.Ask` và người gọi được gán spending policy/Copilot Credits. Có phí Microsoft
+riêng ngoài Gemini; đăng nhập thành công chưa xác nhận billing đã sẵn sàng.
+Xem [hướng dẫn chính thức của Microsoft](https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/work-iq/mcp/retrieve).
 
 Upload WAV được chuyển vào phần **Kết nối Microsoft → Giọng nói**. Kẹp giấy trong chat
 hiện dành cho tài liệu.

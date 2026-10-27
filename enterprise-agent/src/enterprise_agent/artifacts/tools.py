@@ -18,6 +18,9 @@ class ArtifactTools:
         allowlisted template_id. This writes only to tenant-isolated local artifact storage;
         it never updates enterprise source systems.
         """
+        # Agent Framework can supply nested tool arguments as dictionaries even when
+        # their JSON schema comes from a Pydantic annotation. Validate before use/write.
+        spec = ArtifactSpec.model_validate(spec)
         principal = get_request_context().principal
         # Record before the side effect: even a failed renderer must not replay the turn.
         record_tool_call(

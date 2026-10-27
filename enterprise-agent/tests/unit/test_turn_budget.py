@@ -127,3 +127,33 @@ async def test_source_read_window_includes_token_and_network(source, phase, tmp_
         == {"workiq": "workiq", "document": "workiq_document", "fabric": "fabric"}[source]
     )
     assert events[0]["latency_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_cancelled_turn_clears_cache_even_if_a_child_context_is_retained():
+    budget = budget_module()
+    context = set_request_context(RequestContext(Principal.anonymous()))
+    retained = None
+    ready = asyncio.Event()
+
+    async def value():
+        return "private document"
+
+    async def child():
+        await ready.wait()
+        with pytest.raises(TimeoutError):
+            await budget.cached_source_read(("document",), value)
+
+    try:
+        with pytest.raises(asyncio.CancelledError), budget.turn_budget(30, 1):
+            await budget.cached_source_read(("document",), value)
+            retained = budget._read_cache.get()
+            child_task = asyncio.create_task(child())
+            raise asyncio.CancelledError()
+        assert retained.values == {}
+        assert retained.references == {}
+        ready.set()
+        await child_task
+    finally:
+        ready.set()
+        reset_request_context(context)

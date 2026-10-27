@@ -13,7 +13,7 @@ from enterprise_agent.agent.instructions import build_system_instructions
         ),
         (
             {"workiq_read"},
-            ["workiq_fetch", "workiq_read_document"],
+            ["workiq_fetch", "workiq_read_document", "workiq_search_documents"],
             ["list_local_documents", "fabric_query", "draft_action"],
         ),
         ({"fabric_read"}, ["fabric_query"], ["workiq_fetch", "knowledge_query", "create_artifact"]),

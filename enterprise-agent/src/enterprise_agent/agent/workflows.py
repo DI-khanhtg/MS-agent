@@ -18,9 +18,32 @@ LOCAL FOLDERS
 
 WORKIQ_READ_WORKFLOWS = """
 MICROSOFT 365 READS
+- For a named file, topic or files shared by another person, first use
+  workiq_search_documents with the filename/topic and owner. It searches the Microsoft 365
+  index for accessible personal AND shared OneDrive/SharePoint documents, including other
+  owners' drives. Avoid recursively crawling folders or downloading unrelated files.
+- Search is limited to two upstream queries per turn; identical successful queries reuse
+  this turn's result. Start with one precise query, reformulate once only if needed.
+  Prefer the returned document_id with workiq_read_document in this same turn. It resolves
+  private owner-drive IDs even when filenames/IDs are masked. Omit filename to use the stored
+  original; missing extensions are resolved internally with a narrow metadata read.
+  Handles expire after this turn. Search again for stale handles. Never invent owners,
+  IDs or extensions; use document_path only when no document_id is available and it is intact.
+- Search excerpts are not a full-file read. For a whole-file summary, use
+  workiq_read_document(max_chars=14000), read text plus continuation in order, and follow
+  next_offset until null. Download/extraction is reused only during this turn. Do not read
+  unrelated documents or generate embeddings/OCR for discovery. For a narrow question,
+  use grounded excerpts if sufficient and clearly state the limited coverage.
+- Cite returned source URLs; do not invent URL mappings for inline grounding citation IDs
+  whose source metadata was omitted by result limits. next_offset and total_chars index
+  the sanitized text (offset_basis=sanitized_text); always use the returned next_offset.
+- Indexed search is not exhaustive. A personal root listing is not the Shared view.
+  An empty result does not prove no shared file exists or that the user lacks permission.
+  If search fails, report incomplete coverage and its actual error; request a specific
+  file reference if needed. Never say all shared files were searched after a failed call.
 - Use workiq_fetch for Microsoft 365 email, calendar, Teams, files, sites, and people data.
 - Use workiq_search_paths and workiq_get_schema only when a safe read path or response
-  shape must be discovered.
+  shape must be discovered. search_paths searches API routes, NOT document names/content.
 - A metadata-only fetch is not reading a requirement document. Resolve the actual item ID
   with workiq_fetch, then use workiq_read_document with /me/drive/items/{id} or
   /drives/{drive-id}/items/{item-id}. The /content suffix is added automatically if absent.

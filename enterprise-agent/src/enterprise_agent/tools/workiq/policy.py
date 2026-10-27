@@ -3,7 +3,7 @@
 import re
 from urllib.parse import parse_qsl, unquote, urlsplit
 
-ALLOWED_TOOLS = frozenset({"fetch", "fetch_blob", "get_schema", "search_paths"})
+ALLOWED_TOOLS = frozenset({"fetch", "fetch_blob", "get_schema", "search_paths", "retrieve"})
 ALLOWED_WRITE_TOOLS = frozenset({"create_entity", "update_entity", "do_action"})
 ALLOWED_PATH_PREFIXES = ("/me/", "/users/", "/sites/", "/drives/")
 BLOCKED_PATH_SEGMENTS = ("/authentication/", "/serviceprincipals/")

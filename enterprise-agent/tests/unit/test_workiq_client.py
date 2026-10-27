@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -147,3 +148,75 @@ async def test_mcp_client_rejects_write_tool_before_transport() -> None:
 
     with pytest.raises(WorkIQPolicyError):
         await client.call_tool("delete_entity", {}, access_token="delegated-token", write=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "schema_case", ["valid", "missing_tool", "new_required_field", "different_strategy"]
+)
+async def test_retrieval_discovers_and_validates_live_schema_before_any_billed_call(
+    monkeypatch, schema_case
+):
+    FakeSession.calls = []
+    FakeSession.result = FakeResult()
+    listed = []
+    schema = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "strategy": {"enum": ["grounding", "copilot"]},
+            "capabilities": {"type": "array", "items": {"type": "object"}},
+        },
+        "required": ["query"],
+        "additionalProperties": False,
+    }
+    if schema_case == "new_required_field":
+        schema["required"].append("new_field")
+    if schema_case == "different_strategy":
+        schema["properties"]["strategy"]["enum"] = ["new-strategy"]
+
+    async def list_tools(self, cursor=None):
+        listed.append(cursor)
+        return SimpleNamespace(
+            tools=[]
+            if schema_case == "missing_tool"
+            else [SimpleNamespace(name="retrieve", inputSchema=schema)],
+            nextCursor=None,
+        )
+
+    @asynccontextmanager
+    async def transport(url, *, http_client):
+        yield "read", "write", lambda: "session-id"
+
+    monkeypatch.setattr(FakeSession, "list_tools", list_tools, raising=False)
+    monkeypatch.setattr("enterprise_agent.tools.workiq.client.ClientSession", FakeSession)
+    monkeypatch.setattr("enterprise_agent.tools.workiq.client.streamable_http_client", transport)
+    client = WorkIQMCPClient(settings())
+    arguments = {
+        "query": "shared slides",
+        "strategy": "grounding",
+        "capabilities": [{"name": "OneDriveAndSharePoint"}],
+    }
+    if schema_case == "valid":
+        await client.call_tool("retrieve", arguments, access_token="token")
+        assert FakeSession.calls == [("retrieve", arguments)]
+    else:
+        with pytest.raises(WorkIQClientError):
+            await client.call_tool("retrieve", arguments, access_token="token")
+        assert FakeSession.calls == []
+    assert listed == [None]
+
+
+@pytest.mark.asyncio
+async def test_potentially_billed_retrieval_is_not_automatically_replayed(monkeypatch):
+    client = WorkIQMCPClient(settings(workiq_max_retries=3))
+    calls = []
+
+    async def timeout(*args, **kwargs):
+        calls.append(True)
+        raise TimeoutError("request may already have been processed")
+
+    monkeypatch.setattr(client, "_call_once", timeout)
+    with pytest.raises(WorkIQClientError):
+        await client.call_tool("retrieve", {}, access_token="token")
+    assert len(calls) == 1

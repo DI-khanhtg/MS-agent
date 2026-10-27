@@ -72,6 +72,12 @@ def create_default_registry(
         ToolDefinition("get_mock_calendar", "mock_read", get_mock_calendar),
     ]
     if workiq_tools is not None:
+        if hasattr(workiq_tools, "workiq_search_documents"):
+            definitions.append(
+                ToolDefinition(
+                    "workiq_search_documents", "workiq_read", workiq_tools.workiq_search_documents
+                )
+            )
         if hasattr(workiq_tools, "workiq_read_document"):
             definitions.append(
                 ToolDefinition(

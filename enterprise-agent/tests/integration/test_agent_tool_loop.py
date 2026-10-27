@@ -415,6 +415,144 @@ async def test_workiq_result_is_redacted_before_second_model_request() -> None:
 
 
 @pytest.mark.asyncio
+async def test_shared_pptx_search_read_and_word_export_through_real_framework(
+    document_files, tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from docx import Document
+
+    from enterprise_agent.artifacts.renderers import create_renderer_registry
+    from enterprise_agent.artifacts.service import ArtifactService
+    from enterprise_agent.artifacts.store import ArtifactStore
+    from enterprise_agent.artifacts.templates import TemplateCatalog
+    from enterprise_agent.artifacts.tools import ArtifactTools
+
+    filename, content, expected = document_files["pptx"]
+    path = "/drives/1234567890123456/items/9876543210"
+    reference = "wiq_" + "a" * 32
+    monkeypatch.setattr(
+        "enterprise_agent.agent.budget.uuid4", lambda: SimpleNamespace(hex="a" * 32)
+    )
+    source = "https://company.sharepoint.com/shared/objectives.pptx"
+    calls = []
+
+    class Client:
+        async def call_tool(self, name, arguments, *, access_token):
+            calls.append((name, arguments))
+            if name == "retrieve":
+                return {
+                    "structuredContent": {
+                        "application/vnd.ms-workiq.retrieval": {
+                            "markdown": "Relevant shared slide [^h1]",
+                            "retrievalHits": [
+                                {
+                                    "id": "h1",
+                                    "entityUrl": path,
+                                    "webUrl": source,
+                                    "resourceMetadata": {
+                                        "document": {
+                                            "title": filename,
+                                            "authorName": "Shared Owner",
+                                        }
+                                    },
+                                }
+                            ],
+                            "resultCount": 1,
+                            "stoppedReason": "completed",
+                        }
+                    }
+                }
+            assert name == "fetch_blob"
+            assert arguments == {"path": path + "/content"}
+            return {"structuredContent": {"base64Content": base64.b64encode(content).decode()}}
+
+    provider = AsyncMock()
+    provider.get_token.return_value = "delegated-token"
+    settings = Settings(_env_file=None)
+    reader = WorkIQReadTools(Client(), provider, EgressGate.from_yaml(settings.egress_policy_path))
+    store = ArtifactStore(tmp_path / "artifacts")
+    artifacts = ArtifactTools(
+        ArtifactService(
+            store,
+            TemplateCatalog.from_yaml(
+                settings.artifact_template_config_path, settings.artifact_template_root
+            ),
+            create_renderer_registry(
+                node_executable="node", artifact_tool_entrypoint=None, timeout_seconds=30
+            ),
+        )
+    )
+    current = Principal(
+        "tenant-a",
+        "user-a",
+        "subject-a",
+        None,
+        frozenset({"access_as_user"}),
+        "frontend",
+        "incoming-token",
+    )
+    result, requests = await _run_script(
+        [
+            [
+                _function_call(
+                    "workiq_search_documents",
+                    {"query": "objectives.pptx shared by Shared Owner"},
+                    1,
+                )
+            ],
+            [
+                _function_call(
+                    "workiq_read_document",
+                    {"document_id": reference, "max_chars": 14000},
+                    2,
+                )
+            ],
+            [
+                _function_call(
+                    "create_artifact",
+                    {
+                        "spec": {
+                            "artifact_type": "docx",
+                            "title": "Shared slide summary",
+                            "sections": [{"heading": "Summary", "body": expected}],
+                            "sources": [{"label": filename, "reference": source}],
+                        }
+                    },
+                    3,
+                )
+            ],
+            [_message("The Word summary is ready.", 4)],
+        ],
+        registry=create_default_registry(reader, artifact_tools=artifacts),
+        enabled_tool_groups="workiq_read,artifact_generation",
+        context=RequestContext(current),
+    )
+    search = json.loads(next(m["content"] for m in requests[1]["messages"] if m["role"] == "tool"))[
+        "data"
+    ]
+    assert search["documents"][0]["document_id"] == reference
+    assert path not in json.dumps(requests)
+    read = json.loads([m["content"] for m in requests[2]["messages"] if m["role"] == "tool"][-1])[
+        "data"
+    ]
+    assert expected in read["text"]
+    assert read["extraction"]["format"] == "pptx"
+    assert [name for name, _ in calls] == ["retrieve", "fetch_blob"]
+    records = store.list(current)
+    assert len(records) == 1
+    _, output_path = store.get(records[0].artifact_id, current)
+    paragraphs = "\n".join(paragraph.text for paragraph in Document(output_path).paragraphs)
+    assert expected in paragraphs
+    assert source in paragraphs
+    assert [call["name"] for call in result.tool_calls] == [
+        "workiq_search_documents",
+        "workiq_read_document",
+        "create_artifact",
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("case", ["pdf", "access_denied", "invalid_path", "corrupt_pdf"])
 async def test_document_result_reaches_model_through_real_framework(document_files, case):
     _, content, expected = document_files["pdf"]

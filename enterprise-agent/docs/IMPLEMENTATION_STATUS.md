@@ -1,5 +1,23 @@
 # Master plan implementation status
 
+## Indexed shared-document discovery (2026-10-27)
+
+Work IQ document search now uses read-only `retrieve` (`grounding`, OneDrive/SharePoint),
+validates the deployed MCP schema, caps upstream searches at two per turn and avoids
+automatic replay of potentially billed retrievals. Owner/assertion-scoped opaque references
+resolve other drives and numeric IDs without relying on redacted paths. Extensionless
+titles are resolved through a narrow filename metadata read. Search is explicitly
+non-exhaustive; errors and empty results cannot establish missing file permissions.
+
+Parsed files and successful retrievals are reused in an eight-entry RAM cache during the
+turn, explicitly cleared/closed on exit and cancellation. Document reads support bounded
+14000-character windows with full-text PII masking before splitting and sanitized-text
+offsets. Deterministic Agent Framework integration covers shared PPTX discovery/read and
+actual DOCX generation; the artifact tool also validates dictionary arguments before use.
+Live `retrieve` availability, billing, the user's shared file and actual latency/cost savings
+still require tenant validation. See [Work IQ setup](WORKIQ_SETUP.md) and
+[document reading](DOCUMENT_READING.md).
+
 ## Document reading (2026-10-26)
 
 The shared local/Work IQ reader handles selectable-text PDF, DOCX, PPTX, XLSX and UTF-8

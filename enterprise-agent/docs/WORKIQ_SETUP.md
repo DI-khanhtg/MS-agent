@@ -20,6 +20,32 @@ Work IQ must be available for the tenant, with permissions, consent and the serv
 billing configuration. Confirm these in the tenant before live testing. This adapter uses
 delegated access and does not implement application-only access.
 
+### Indexed discovery of personal and shared documents
+
+`workiq_search_documents` uses the read-only Work IQ `retrieve` tool with `grounding` and
+the `OneDriveAndSharePoint` capability. It searches indexed documents accessible to the
+signed-in user, including files in another owner's drive. It does not crawl every folder,
+use the retiring `sharedWithMe` endpoint, or grant additional permissions.
+
+This public-preview tool needs Work IQ enabled, delegated `WorkIQAgent.Ask` consent, and
+usage-based Copilot Credits billing with a spending policy assigned to the calling user.
+Before retrieval the client calls `tools/list`, discovers the deployed schema, and validates
+the request. Missing/incompatible tools fail with a safe diagnostic, without guessing another
+API or automatically falling back to an agent that could perform mutations.
+
+The adapter allows at most two upstream retrievals per chat turn, does not automatically
+retry potentially billed retrievals, and returns at most ten document references (five by
+default). Successful identical searches and parsed file contents are reused only within the
+current turn, scoped to the verified tenant/user/assertion. This bounds redundant work; it
+does not guarantee a particular Microsoft/Gemini bill or latency. Search is not exhaustive,
+and the indexed excerpts do not establish a complete file read.
+
+If personal root listings work but discovery fails, check tool availability, consent, user
+file access, spending-policy assignment and Work IQ MCP tenant policy. An empty result may
+reflect indexing/coverage and must not be reported as proof of missing permissions. Follow
+a returned validated owner-drive item reference to read actual content; do not guess IDs.
+See [Microsoft's retrieve contract and prerequisites](https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/work-iq/mcp/retrieve).
+
 ## 2. Register/configure the client
 
 The web or Teams client must request an access token for the backend API's

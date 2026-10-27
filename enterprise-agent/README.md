@@ -63,6 +63,8 @@ Nguồn được agent đọc có thể gửi tới Gemini sau khi qua bộ lọ
 
 Hỗ trợ UTF-8 TXT/MD/CSV/JSON, DOCX, PPTX, PDF và XLSX. Nhập từ trình duyệt tối đa 2 MB/tệp; PDF tối đa 200 trang, PPTX tối đa 200 slide. Chưa có OCR hoặc phân tích ảnh/biểu đồ; `.doc`, `.ppt`, `.xls` cần chuyển sang định dạng mới. Xem [Đọc tài liệu](docs/DOCUMENT_READING.md) để biết giới hạn trích xuất và cách báo phần chưa đọc.
 
+File người khác chia sẻ được tìm qua chỉ mục OneDrive/SharePoint theo quyền tài khoản, không chỉ thư mục cá nhân. Agent ưu tiên tìm đúng file rồi đọc, tối đa hai truy vấn tìm kiếm Microsoft mỗi lượt chat, dùng lại kết quả tải/trích xuất trong lượt đó. Tính năng tìm kiếm cần tenant bật Work IQ `retrieve` và Copilot Credits; phí này riêng với Gemini. Xem [Work IQ setup](docs/WORKIQ_SETUP.md#indexed-discovery-of-personal-and-shared-documents).
+
 ## Kiểm tra và tài liệu kỹ thuật
 
 ```powershell
