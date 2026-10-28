@@ -23,6 +23,7 @@ _TOOLS = {
     "workiq_write",
     "fabric_read",
     "foundry_read",
+    "subagents",
 }
 _PERSONAL_TENANT = "9188040d-6c67-4c5b-b112-36a304b66dad"
 
@@ -147,7 +148,7 @@ def setup_environment(
     if secret_fn is None and not sys.stdin.isatty():
         output_fn(
             "Setup needs an interactive terminal for hidden secret input. "
-            "Alternatively copy .env.example to .env and edit it privately."
+            "Alternatively supply configuration through private environment variables."
         )
         return 2
     ask, ask_secret = input_fn or input, secret_fn or getpass.getpass

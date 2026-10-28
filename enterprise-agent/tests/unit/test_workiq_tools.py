@@ -284,6 +284,8 @@ def test_registry_exposes_workiq_read_without_write_tools() -> None:
         "workiq_get_schema",
         "workiq_search_paths",
         "workiq_read_document",
+        "workiq_read_documents",
+        "workiq_list_folder",
         "workiq_search_documents",
         "workiq_resolve_document_link",
     }

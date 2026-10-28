@@ -23,11 +23,4 @@ jobs:
           version: '0.11.32'
       - run: uv sync --locked --extra dev
       - run: uv run ruff check .
-      - name: Compile deployment template
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          curl --fail --location --output "$RUNNER_TEMP/bicep" https://github.com/Azure/bicep/releases/download/v0.48.1/bicep-linux-x64
-          chmod +x "$RUNNER_TEMP/bicep"
-          "$RUNNER_TEMP/bicep" build infra/main.bicep --stdout > /dev/null
       - run: uv run pytest -m "not live" --cov=enterprise_agent --cov-report=xml

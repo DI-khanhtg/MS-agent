@@ -9,6 +9,7 @@ from enterprise_agent.agent.workflows import (
     MOCK_WORKFLOWS,
     MULTI_SOURCE_WORKFLOWS,
     READ_ONLY_WORKFLOWS,
+    SUBAGENT_WORKFLOWS,
     WORKIQ_READ_WORKFLOWS,
 )
 
@@ -54,6 +55,7 @@ def build_system_instructions(groups: set[str]) -> str:
         ("foundry_read", KNOWLEDGE_WORKFLOWS),
         ("mock_read", MOCK_WORKFLOWS),
         ("artifact_generation", ARTIFACT_WORKFLOWS),
+        ("subagents", SUBAGENT_WORKFLOWS),
         ("workiq_write", CONTROLLED_ACTION_WORKFLOWS),
     ):
         if group in groups:

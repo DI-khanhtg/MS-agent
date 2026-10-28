@@ -71,6 +71,16 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-3.8-flash"
     gemini_timeout_seconds: float = Field(default=60, gt=0, le=300)
     gemini_max_retries: int = Field(default=2, ge=0, le=5)
+    # Optional second key for tool-less specialist sub-agents (reviewer, writer). Any
+    # OpenAI-compatible endpoint works; the base URL and model default to the main agent's.
+    subagent_enabled: bool = True
+    subagent_api_key: SecretStr = SecretStr("")
+    subagent_base_url: str = ""
+    subagent_model: str = ""
+    subagent_timeout_seconds: float = Field(default=45, gt=0, le=300)
+    subagent_max_retries: int = Field(default=1, ge=0, le=5)
+    subagent_max_calls_per_turn: int = Field(default=3, ge=1, le=10)
+    subagent_max_input_chars: int = Field(default=60_000, ge=1000, le=500_000)
     agent_turn_timeout_seconds: float = Field(default=300, gt=0, le=1800)
     agent_synthesis_reserve_seconds: float = Field(default=15, ge=0)
     # Administrator-supplied rates; omitted until a current provider tariff is confirmed.
@@ -119,7 +129,7 @@ class Settings(BaseSettings):
             raise ValueError("Synthesis reserve must be smaller than the agent turn timeout")
         return self
 
-    @field_validator("gemini_base_url")
+    @field_validator("gemini_base_url", "subagent_base_url")
     @classmethod
     def normalize_base_url(cls, value: str) -> str:
         return value.strip().rstrip("/")
@@ -213,6 +223,21 @@ class Settings(BaseSettings):
         return self.gemini_api_key.get_secret_value().strip() not in PLACEHOLDER_VALUES
 
     @property
+    def subagent_is_configured(self) -> bool:
+        return (
+            self.subagent_enabled
+            and self.subagent_api_key.get_secret_value().strip() not in PLACEHOLDER_VALUES
+        )
+
+    @property
+    def subagent_endpoint(self) -> str:
+        return self.subagent_base_url or self.gemini_base_url
+
+    @property
+    def subagent_model_name(self) -> str:
+        return self.subagent_model.strip() or self.gemini_model
+
+    @property
     def speech_is_configured(self) -> bool:
         return bool(
             self.speech_provider == "azure"
@@ -278,7 +303,11 @@ class Settings(BaseSettings):
 
     @property
     def tool_groups(self) -> set[str]:
-        return _csv_set(self.enabled_tool_groups)
+        """Enabled groups; sub-agents follow their key so a missing key never breaks chat."""
+        groups = _csv_set(self.enabled_tool_groups) - {"subagents"}
+        if self.subagent_is_configured and self.runtime_mode == "gemini":
+            groups.add("subagents")
+        return groups
 
     @property
     def entra_is_configured(self) -> bool:

@@ -1,7 +1,5 @@
 .env
 .env.*
-!.env.example
-!.env.shared.example
 .venv/
 !src/enterprise_agent/artifacts/
 !src/enterprise_agent/artifacts/**

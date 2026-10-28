@@ -40,6 +40,7 @@ from enterprise_agent.security.egress import EgressGate
 from enterprise_agent.security.token_validation import EntraTokenValidator, TokenValidator
 from enterprise_agent.storage.conversations import ConversationStore
 from enterprise_agent.storage.database import Database
+from enterprise_agent.subagents.tools import SubAgentTools
 from enterprise_agent.telemetry.operations import AuditLog, RateLimiter, audit_sink
 from enterprise_agent.telemetry.tracing import configure_tracing, request_span
 from enterprise_agent.tools.document_reader import SUPPORTED
@@ -170,6 +171,11 @@ def create_app(
                 action_tools=ControlledActionTools(approval_service),
                 local_tools=local_tools,
                 knowledge_tools=KnowledgeTools(app_settings, egress_gate),
+                subagent_tools=(
+                    SubAgentTools(app_settings, egress_gate)
+                    if app_settings.subagent_is_configured
+                    else None
+                ),
             ),
             egress_gate=egress_gate,
             database=database,

@@ -35,6 +35,15 @@ class ResolvedSharedFile:
     size_bytes: int | None
 
 
+@dataclass(frozen=True)
+class ResolvedSharedFolder:
+    path: str
+    filename: str
+    web_url: str
+    sensitivity_label: dict | str | None
+    child_count: int | None = None
+
+
 class SharedLinkResolver:
     def __init__(
         self,
@@ -77,6 +86,22 @@ class SharedLinkResolver:
                         "link_requires_active_turn",
                         "Resolve the link inside an active authenticated agent turn.",
                     )
+                if isinstance(document, ResolvedSharedFolder):
+                    return self._output(
+                        {
+                            "source": "workiq:shared_link",
+                            "item_type": "folder",
+                            "folder_id": reference,
+                            "folder_name": document.filename,
+                            "web_url": document.web_url,
+                            "sensitivityLabel": document.sensitivity_label,
+                            "child_count": document.child_count,
+                            "content_read": False,
+                            "next_step": "Call workiq_list_folder with this folder_id to list "
+                            "files and subfolders.",
+                            "trust": "untrusted_document_data",
+                        }
+                    )
                 return self._output(
                     {
                         "source": "workiq:shared_link",
@@ -109,7 +134,7 @@ class SharedLinkResolver:
                 "Resolving the shared link exceeded its source time budget; retry in a new turn.",
             )
 
-    async def _fetch(self, url: str) -> ResolvedSharedFile:
+    async def _fetch(self, url: str) -> ResolvedSharedFile | ResolvedSharedFolder:
         context = get_request_context()
         token = await self.provider.get_token(context.principal)
         path = validate_read_path(shared_item_path(url) + "?$select=" + SHARED_ITEM_SELECT)
@@ -164,11 +189,7 @@ class SharedLinkResolver:
             raise SharedLinkError(
                 "invalid_link_response", "Work IQ returned invalid shared-item metadata."
             )
-        if "folder" in item:
-            raise SharedLinkError(
-                "link_not_file",
-                "This link points to a folder. Supply the link to the specific PDF or Office file.",
-            )
+        is_folder = isinstance(item.get("folder", data.get("folder")), dict)
         drive = item.get("parentReference", {})
         drive_id = drive.get("driveId") if isinstance(drive, dict) else None
         item_id = item.get("id")
@@ -183,7 +204,7 @@ class SharedLinkResolver:
             or not isinstance(name, str)
             or not name
             or len(name) > 1000
-            or not isinstance(item.get("file", data.get("file")), dict)
+            or not (is_folder or isinstance(item.get("file", data.get("file")), dict))
         ):
             raise SharedLinkError(
                 "invalid_link_response",
@@ -208,6 +229,15 @@ class SharedLinkResolver:
                 canonical = ""
         except SharedLinkError:
             canonical = ""
+        if is_folder:
+            count = item.get("folder", data.get("folder")).get("childCount")
+            return ResolvedSharedFolder(
+                resolved_path,
+                name,
+                canonical,
+                data.get("sensitivityLabel", item.get("sensitivityLabel")),
+                count if type(count) is int and count >= 0 else None,
+            )
         size = item.get("size", data.get("size"))
         if size is not None and (type(size) is not int or size < 0):
             raise SharedLinkError(

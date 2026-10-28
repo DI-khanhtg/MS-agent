@@ -180,13 +180,12 @@ async def test_failed_link_resolution_reports_actual_stage(environment, status, 
 @pytest.mark.parametrize(
     "changes,code",
     [
-        ({"folder": {}}, "link_not_file"),
         ({"id": ""}, "invalid_link_response"),
         ({"parentReference": {}}, "invalid_link_response"),
         ({"id": "../../private"}, "invalid_link_response"),
     ],
 )
-async def test_folders_and_unresolved_or_unsafe_items_are_not_read(environment, changes, code):
+async def test_unresolved_or_unsafe_items_are_not_read(environment, changes, code):
     tools, client, _, _ = environment
     client.call_tool.return_value = drive_response(**changes)
     result = await tools.workiq_resolve_document_link(url=URL)

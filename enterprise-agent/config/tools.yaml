@@ -23,12 +23,23 @@ groups:
       - workiq_get_schema
       - workiq_search_paths
       - workiq_read_document
+      - workiq_list_folder
+      - workiq_read_documents
   artifact_generation:
     enabled: true
     read_only: false
     enterprise_side_effects: false
     tools:
       - create_artifact
+  subagents:
+    enabled: true
+    read_only: true
+    enterprise_side_effects: false
+    # Tool-less specialists on a separate key; they see only what the main agent sends,
+    # after the egress gate.
+    tools:
+      - review_draft
+      - polish_writing
   fabric_read:
     enabled: true
     read_only: true

@@ -68,7 +68,7 @@ def running(project, environment, command, port):
 def test_clean_checkout_demo_history_and_microsoft_bootstrap(tmp_path):
     project = tmp_path / "enterprise-agent"
     project.mkdir()
-    for name in ("pyproject.toml", "uv.lock", "README.md", ".python-version", ".env.example"):
+    for name in ("pyproject.toml", "uv.lock", "README.md", ".python-version"):
         shutil.copy2(PROJECT_ROOT / name, project / name)
     for name in ("src", "config", "templates"):
         shutil.copytree(

@@ -18,6 +18,10 @@ _read_cache: ContextVar["_TurnCache | None"] = ContextVar("read_cache", default=
 T = TypeVar("T")
 
 
+# Large folder listings register one handle per entry shown to the model.
+_MAX_REFERENCES = 400
+
+
 class _TurnCache:
     """Small RAM-only cache; never kept on the shared tool/client instance."""
 
@@ -84,7 +88,7 @@ def register_source_reference(namespace: str, key: tuple, value: Any) -> str | N
         # A random 128-bit identifier encoded as letters avoids PII redaction of IDs.
         opaque = "wiq_" + uuid4().hex.translate(str.maketrans("0123456789", "ghijklmnop"))
         cache.references[key] = (opaque, value)
-        if len(cache.references) > 32:
+        if len(cache.references) > _MAX_REFERENCES:
             cache.references.popitem(last=False)
     cache.references.move_to_end(key)
     return cache.references[key][0]
