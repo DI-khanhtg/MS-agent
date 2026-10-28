@@ -104,6 +104,24 @@ def test_chat_rejects_blank_message() -> None:
     assert response.status_code == 422
 
 
+def test_chat_deep_link_serves_only_the_app_shell_and_does_not_replace_api_routes():
+    config = settings()
+    config.auth_enabled = True
+    config.azure_tenant_id = "11111111-1111-1111-1111-111111111111"
+    config.auth_allowed_tenant_ids = config.azure_tenant_id
+    config.entra_api_audience = "22222222-2222-2222-2222-222222222222"
+    client = TestClient(create_app(settings=config, runtime=FakeRuntime()))
+    response = client.get("/chat/legacy-session_123")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["cache-control"] == "no-store"
+    assert 'id="messages"' in response.text
+    assert client.get("/api/sessions/legacy-session_123").status_code == 401
+    assert client.get("/chat/" + "a" * 129).status_code == 404
+    assert client.get("/missing-route").status_code == 404
+    assert client.get("/auth/callback").status_code == 200
+
+
 def test_chat_returns_503_when_key_is_missing() -> None:
     client = TestClient(create_app(settings=settings(), runtime=UnconfiguredRuntime()))
 

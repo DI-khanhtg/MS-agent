@@ -7,6 +7,10 @@ let sessionId = null,
     currentView = "chat";
 const microsoftSession = new MicrosoftSession();
 let workspaceGeneration = 0;
+let chatNavigation = 0,
+    chatLoading = false,
+    chatUnavailable = false,
+    pendingChatNavigation = false;
 let importedFolder = null;
 const sharedDeployment = () => (microsoftSession.settings?.deployment_mode || config.deployment_mode) === "shared";
 const uploadsEnabled = () => config.tool_groups?.includes("local_read")
@@ -90,13 +94,98 @@ function showView(view) {
     }
     toggleSidebar(false);
 }
-function resetConversation() {
+function updateChatControls() {
+    $("send").disabled = busy || chatLoading || chatUnavailable;
+    $("proposal").disabled = busy || chatLoading || chatUnavailable;
+}
+function chatIdFromLocation() {
+    const match = location.pathname.match(/^\/chat\/([^/]+)\/?$/);
+    if (!match) return null;
+    try {
+        const id = decodeURIComponent(match[1]);
+        return id.length <= 128 ? id : null;
+    } catch {
+        return null;
+    }
+}
+function setChatLocation(id, replace = false) {
+    const path = id ? "/chat/" + encodeURIComponent(id) : "/";
+    if (location.pathname === path) {
+        if (replace && (location.search || location.hash)) history.replaceState({}, "", path);
+        return;
+    }
+    history[replace ? "replaceState" : "pushState"]({}, "", path);
+}
+function resetConversation({updateUrl = true} = {}) {
+    chatNavigation += 1;
+    chatLoading = false;
+    chatUnavailable = false;
+    pendingChatNavigation = false;
     sessionId = null;
     $("messages").replaceChildren();
     $("welcome").hidden = false;
     for (const button of document.querySelectorAll("#sessions button")) button.classList.remove("selected");
     showView("chat");
+    if (updateUrl) setChatLocation(null);
+    updateChatControls();
 }
+async function openConversation(id, {updateUrl = true} = {}) {
+    resetConversation({updateUrl: false});
+    const generation = workspaceGeneration, navigation = chatNavigation;
+    chatLoading = true;
+    updateChatControls();
+    status("Đang mở hội thoại…");
+    try {
+        const saved = await (await api("/api/sessions/" + encodeURIComponent(id))).json();
+        if (generation !== workspaceGeneration || navigation !== chatNavigation) return false;
+        sessionId = id;
+        for (const turn of saved.messages) bubble(turn.role === "user" ? "user" : "agent", turn.text);
+        for (const button of document.querySelectorAll("#sessions button")) {
+            button.classList.toggle("selected", button.dataset.sessionId === id);
+        }
+        if (updateUrl) setChatLocation(id);
+        status("Đã mở lại hội thoại.");
+        return true;
+    } catch (error) {
+        if (generation !== workspaceGeneration || navigation !== chatNavigation) return false;
+        chatUnavailable = true;
+        status(error.status === 404
+            ? "Không tìm thấy hội thoại hoặc bạn không có quyền truy cập. Hãy tạo hội thoại mới hoặc đăng nhập đúng tài khoản."
+            : error.message, true);
+        return false;
+    } finally {
+        if (generation === workspaceGeneration && navigation === chatNavigation) {
+            chatLoading = false;
+            updateChatControls();
+        }
+    }
+}
+async function restoreChatLocation() {
+    const id = chatIdFromLocation();
+    if (!id) {
+        resetConversation({updateUrl: false});
+        return;
+    }
+    if (microsoftSession.settings?.enabled && !microsoftSession.account && !$("token").value.trim()) {
+        resetConversation({updateUrl: false});
+        status("Đăng nhập Microsoft để mở hội thoại này.");
+        return;
+    }
+    await openConversation(id, {updateUrl: false});
+}
+async function restorePendingChatLocation() {
+    if (!pendingChatNavigation) return;
+    pendingChatNavigation = false;
+    await restoreChatLocation();
+}
+window.addEventListener("popstate", () => {
+    chatNavigation += 1;
+    if (busy) {
+        pendingChatNavigation = true;
+        return;
+    }
+    void restoreChatLocation();
+});
 function scrollToLatest() {
     const scroll = $("conversation-scroll");
     scroll.scrollTop = scroll.scrollHeight;
@@ -272,24 +361,12 @@ async function refresh() {
         sessions.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
         for (const item of sessions) {
             const b = element("button", item.session_id === sessionId ? "selected" : "");
+            b.dataset.sessionId = item.session_id;
             const date = new Date(item.updated_at).toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit" });
             b.append(icon("chat"), element("span", "session-title", "Hội thoại " + date), element("span", "session-turns", item.turns + " lượt"));
             b.onclick = async () => {
                 if (busy) return;
-                const generation = workspaceGeneration;
-                try {
-                    const saved = await (await api("/api/sessions/" + encodeURIComponent(item.session_id))).json();
-                    if (generation !== workspaceGeneration) return;
-                    sessionId = item.session_id;
-                    $("messages").replaceChildren();
-                    showView("chat");
-                    for (const turn of saved.messages) bubble(turn.role === "user" ? "user" : "agent", turn.text);
-                    for (const button of document.querySelectorAll("#sessions button")) button.classList.toggle("selected", button === b);
-                    status("Đã mở lại hội thoại.");
-                } catch (e) {
-                    if (generation !== workspaceGeneration) return;
-                    status(e.message, true);
-                }
+                await openConversation(item.session_id);
             };
             $("sessions").append(b);
         }
@@ -309,7 +386,7 @@ async function refresh() {
     }
 }
 async function send(message) {
-    if (busy) return;
+    if (busy || chatLoading || chatUnavailable) return;
     if (microsoftSession.settings?.enabled && !microsoftSession.account && !$("token").value.trim()) {
         $("connection-dialog").showModal();
         connectionStatus("Đăng nhập Microsoft trước khi gửi yêu cầu.", true);
@@ -359,7 +436,10 @@ async function send(message) {
                 }
                 if (!data) continue;
                 const payload = JSON.parse(data);
-                if (event === "metadata") sessionId = payload.session_id;
+                if (event === "metadata") {
+                    sessionId = payload.session_id;
+                    if (!pendingChatNavigation) setChatLocation(sessionId);
+                }
                 if (event === "delta") ChatMarkdown.append(output, payload.text);
                 if (event === "done") completed = true;
                 if (event === "error") {
@@ -384,13 +464,13 @@ async function send(message) {
         ChatMarkdown.flush(output);
         scrollToLatest();
         busy = false;
-        $("send").disabled = false;
-        $("proposal").disabled = false;
+        updateChatControls();
+        await restorePendingChatLocation();
     }
 }
 $("chat").onsubmit = e => {
     e.preventDefault();
-    if (busy) return;
+    if (busy || chatLoading || chatUnavailable) return;
     const text = $("message").value.trim();
     if (text) {
         $("message").value = "";
@@ -436,6 +516,7 @@ $("connect").onclick = async () => {
         setMicrosoftConnection(Boolean(config.auth_enabled));
         $("connection-dialog").close();
         status(config.auth_enabled ? "Đã cập nhật kết nối Microsoft." : "Đã cập nhật phiên local. Kết nối Microsoft chưa được bật trên máy chủ.");
+        await restoreChatLocation();
     } else {
         $("connection-status").textContent = $("status").textContent;
         $("connection-status").className = "dialog-status error";
@@ -725,7 +806,7 @@ function clearWorkspace() {
     $("mic").replaceChildren(icon("mic"));
     $("mic").setAttribute("aria-label", "Thu âm yêu cầu");
     $("mic").setAttribute("aria-pressed", "false");
-    resetConversation();
+    resetConversation({updateUrl: false});
     for (const id of ["artifacts", "recent-artifacts", "sessions", "actions", "selected-documents"]) $(id).replaceChildren();
     $("selected-documents").hidden = true;
     $("document-count").textContent = "0";
@@ -770,6 +851,7 @@ $("microsoft-login").onclick = async () => {
     connectionStatus("Đang mở đăng nhập Microsoft…");
     clearWorkspace();
     $("token").value = "";
+    let connected = false;
     try {
         await microsoftSession.login();
         // Only display a connected account once our backend validates its access token.
@@ -779,6 +861,7 @@ $("microsoft-login").onclick = async () => {
         setMicrosoftConnection(true, microsoftSession.account.username);
         $("connection-dialog").close();
         status("Đã kết nối tài khoản Microsoft. Bạn có thể hỏi về OneDrive và SharePoint.");
+        connected = true;
     } catch (error) {
         microsoftSession.account = null;
         clearWorkspace();
@@ -787,7 +870,9 @@ $("microsoft-login").onclick = async () => {
     } finally {
         busy = false;
         $("microsoft-login").disabled = false;
+        updateChatControls();
     }
+    if (connected) await restoreChatLocation();
 };
 
 $("microsoft-logout").onclick = async () => {
@@ -804,6 +889,9 @@ $("microsoft-logout").onclick = async () => {
     } finally {
         showSignedOut();
         busy = false;
+        pendingChatNavigation = false;
+        setChatLocation(null, true);
+        updateChatControls();
     }
 };
 
@@ -909,6 +997,8 @@ async function importDocuments(selected, folderSelection = false) {
         $("document-upload").disabled = false;
         $("folder-upload").value = "";
         $("document-upload").value = "";
+        updateChatControls();
+        await restorePendingChatLocation();
     }
 }
 
@@ -930,6 +1020,7 @@ async function initializeWorkspace() {
             }
             $("login-setup").textContent = "Máy chủ đang dùng phiên local. Đặt AUTH_ENABLED=true để bật đăng nhập Microsoft.";
             await refresh();
+            await restoreChatLocation();
             return;
         }
         clearWorkspace();

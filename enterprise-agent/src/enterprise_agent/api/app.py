@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -189,7 +189,14 @@ def create_app(
 
     @application.get("/", include_in_schema=False)
     async def index():
-        return FileResponse(static_root / "index.html")
+        return FileResponse(static_root / "index.html", headers={"Cache-Control": "no-store"})
+
+    @application.get("/chat/{session_id}", include_in_schema=False)
+    async def chat_page(session_id: str):
+        if len(session_id) > 128:
+            raise HTTPException(404, "Page not found")
+        # This is only the public shell. Session data remains behind the owner-scoped API.
+        return FileResponse(static_root / "index.html", headers={"Cache-Control": "no-store"})
 
     @application.get("/auth/callback", include_in_schema=False)
     async def auth_callback():

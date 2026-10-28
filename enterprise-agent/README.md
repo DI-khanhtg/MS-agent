@@ -9,6 +9,8 @@
 3. Hỏi về tài liệu bạn được quyền đọc, hoặc dán link chia sẻ OneDrive/SharePoint.
 4. Yêu cầu tạo bản nháp và tải kết quả trong **Tài liệu của bạn**.
 
+Mỗi hội thoại có URL riêng dạng `/chat/<session_id>`. Bạn có thể lưu bookmark, tải lại trang và dùng Back/Forward để mở lại hội thoại. Khi tải lại trang, đăng nhập Microsoft lại rồi ứng dụng tự mở hội thoại trong URL. Nút **Hội thoại mới** trở về `/`; link hội thoại chỉ mở được nội dung của tài khoản có quyền truy cập.
+
 Nêu rõ định dạng đầu ra, ví dụ: “Đọc tài liệu này, phân tích rủi ro và xuất một file Word DOCX” hoặc “Tạo cả DOCX và PPTX từ nội dung trên”. Backend trả link tải từ file đã lưu, kể cả khi model bỏ sót link hoặc không trả thêm lời nhắn sau khi tạo file. Link được giữ nguyên khi mở lại lịch sử chat.
 
 Người dùng dịch vụ chung không cần cài Python hoặc cung cấp API key. Quản trị viên tổ chức có thể cần chấp thuận ứng dụng. Đăng nhập thành công chưa xác nhận quyền đọc Microsoft 365; quyền tài khoản, consent và điều kiện dịch vụ của tổ chức vẫn áp dụng.
