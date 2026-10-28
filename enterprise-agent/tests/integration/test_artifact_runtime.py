@@ -78,9 +78,9 @@ async def test_real_artifact_is_recorded_and_has_content(artifact_setup, stream)
     settings, service = artifact_setup
     runtime = MicrosoftAgentRuntime(settings, agent=ArtifactAgent(ArtifactTools(service)))
     if stream:
-        assert [part async for part in runtime.stream_chat("Create report", "session")] == [
-            "Created"
-        ]
+        answer = "".join([part async for part in runtime.stream_chat("Create report", "session")])
+        assert answer.startswith("Created")
+        assert "/api/artifacts/" in answer
         calls = get_stream_result()["tool_calls"]
     else:
         calls = (await runtime.chat("Create report", "session")).tool_calls

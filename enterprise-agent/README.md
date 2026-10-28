@@ -9,6 +9,8 @@
 3. Hỏi về tài liệu bạn được quyền đọc, hoặc dán link chia sẻ OneDrive/SharePoint.
 4. Yêu cầu tạo bản nháp và tải kết quả trong **Tài liệu của bạn**.
 
+Nêu rõ định dạng đầu ra, ví dụ: “Đọc tài liệu này, phân tích rủi ro và xuất một file Word DOCX” hoặc “Tạo cả DOCX và PPTX từ nội dung trên”. Backend trả link tải từ file đã lưu, kể cả khi model bỏ sót link hoặc không trả thêm lời nhắn sau khi tạo file. Link được giữ nguyên khi mở lại lịch sử chat.
+
 Người dùng dịch vụ chung không cần cài Python hoặc cung cấp API key. Quản trị viên tổ chức có thể cần chấp thuận ứng dụng. Đăng nhập thành công chưa xác nhận quyền đọc Microsoft 365; quyền tài khoản, consent và điều kiện dịch vụ của tổ chức vẫn áp dụng.
 
 ## Chuẩn bị mã nguồn
@@ -117,7 +119,7 @@ Backend và proxy/tunnel phải luôn chạy. Nếu host trên máy cá nhân, m
 | `401` | Đăng nhập lại; trình duyệt cần token dành cho backend API |
 | `403` hoặc lỗi consent Graph | Consent của backend, quyền file của người dùng, tenant/client được phép |
 | Không tìm thấy file được chia sẻ | Tên/link đúng, quyền tài khoản, chỉ mục và Work IQ `retrieve`/billing |
-| Agent kết thúc không có nội dung | UI báo lỗi; kiểm tra tài liệu đã tạo trước khi thử lại, xem `finish_reason` trong audit log |
+| Agent kết thúc không có nội dung | Nếu đã tạo file, backend trả link tải; nếu chưa có file thì UI báo lỗi. Kiểm tra mục tài liệu trước khi thử lại và xem `finish_reason` trong audit log |
 
 Token frontend nằm trong bộ nhớ trang. Refresh cần đăng nhập lại; phiên SSO của Microsoft có thể giúp thao tác nhanh hơn. Fabric, Speech và Foundry là tích hợp tùy chọn.
 

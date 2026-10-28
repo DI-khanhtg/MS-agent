@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from collections.abc import AsyncIterator
 from contextlib import aclosing
 from typing import Annotated
@@ -21,7 +22,9 @@ from enterprise_agent.agent.runtime import (
 )
 from enterprise_agent.api.auth import PrincipalDependency
 from enterprise_agent.api.schemas import ChatRequest, ChatResponse
+from enterprise_agent.artifacts.receipts import missing_artifact_links
 from enterprise_agent.artifacts.renderers import ArtifactRenderingError
+from enterprise_agent.artifacts.store import ArtifactNotFoundError
 from enterprise_agent.hosting import chat_slot, check_chat_rate
 from enterprise_agent.security.identity import (
     RequestContext,
@@ -30,7 +33,7 @@ from enterprise_agent.security.identity import (
 )
 from enterprise_agent.telemetry.operations import identity_hash
 from enterprise_agent.tools.local.documents import LocalDocumentError
-from enterprise_agent.tools.recording import get_stream_result
+from enterprise_agent.tools.recording import get_completed_artifacts, get_stream_result
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["chat"])
@@ -160,12 +163,19 @@ async def stream_chat(
         parts = []
         yield _sse("metadata", {"session_id": session_id})
         try:
-            async with aclosing(
-                runtime.stream_chat(message, session_id, RequestContext(principal))
-            ) as updates:
-                async for text in updates:
-                    parts.append(text)
-                    yield _sse("delta", {"text": text})
+            try:
+                async with aclosing(
+                    runtime.stream_chat(message, session_id, RequestContext(principal))
+                ) as updates:
+                    async for text in updates:
+                        parts.append(text)
+                        yield _sse("delta", {"text": text})
+            except Exception:
+                # A completed write remains usable if the provider subsequently fails.
+                links = missing_artifact_links("".join(parts))
+                if links:
+                    yield _sse("delta", {"text": links})
+                raise
             if not "".join(parts).strip():
                 raise AgentEmptyResponseError("The runtime returned no answer")
             details = get_stream_result()
@@ -234,7 +244,7 @@ async def _save_turn(request, principal, session_id, message, answer, tools, usa
         session_id,
         principal,
         str(safe(message)),
-        str(safe(answer)),
+        await _safe_answer(request, principal, answer),
         safe(tools) if isinstance(safe(tools), list) else [],
         usage,
     )
@@ -250,3 +260,38 @@ async def _save_turn(request, principal, session_id, message, answer, tools, usa
         output_tokens=usage.get("output_token_count", 0),
         status="ok",
     )
+
+
+async def _safe_answer(request, principal, answer: str) -> str:
+    """Keep verified owned download URLs intact while masking ordinary answer content."""
+    gate = request.app.state.egress
+    original = gate.evaluate(answer)
+    if not original.allowed:
+        return "[Blocked by egress policy]"
+    protected = answer
+    replacements = {}
+    verified_urls = {record["download_url"] for record in get_completed_artifacts()}
+    pattern = r"/api/artifacts/([0-9a-fA-F-]{36})/download"
+    for match in list(re.finditer(pattern, answer))[:50]:
+        url = match.group(0)
+        if url in replacements.values():
+            continue
+        if url not in verified_urls:
+            try:
+                await anyio.to_thread.run_sync(
+                    request.app.state.artifact_service.store.get, match.group(1), principal
+                )
+            except (ArtifactNotFoundError, ValueError, OSError, RuntimeError):
+                continue
+        placeholder = "ARTIFACTLINK" + uuid4().hex.translate(
+            str.maketrans("0123456789", "abcdefghij")
+        )
+        replacements[placeholder] = url
+        protected = protected.replace(url, placeholder)
+    decision = gate.evaluate(protected)
+    if not decision.allowed:
+        return "[Blocked by egress policy]"
+    text = str(decision.payload)
+    for placeholder, url in replacements.items():
+        text = text.replace(placeholder, url)
+    return text

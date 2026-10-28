@@ -235,3 +235,42 @@ def test_historical_empty_answer_does_not_show_a_waiting_indicator(app_url):
         playwright.expect(agent).to_contain_text("không trả về nội dung")
         assert agent.evaluate("el => getComputedStyle(el, '::after').content") in ("none", "normal")
         browser.close()
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        "```markdown\n[Download]({url})",
+        "```text\nProcessing...",
+        "~~~~text\nProcessing...",
+        "\\[Download]({url})",
+        "    [Download]({url})",
+        "``[Download]({url})``",
+    ],
+    ids=["open-fence-link", "open-fence", "tilde-fence", "escaped", "indent", "inline"],
+)
+def test_artifact_receipt_link_renders_outside_model_code(app_url, context):
+    from enterprise_agent.artifacts.receipts import missing_artifact_links
+    from enterprise_agent.tools.recording import (
+        begin_tool_recording,
+        end_tool_recording,
+        record_completed_artifact,
+    )
+
+    artifact_id = "12345678-1234-4234-8234-123456789012"
+    url = f"/api/artifacts/{artifact_id}/download"
+    text = context.format(url=url)
+    token = begin_tool_recording()
+    try:
+        record_completed_artifact({"artifact_id": artifact_id, "artifact_type": "docx"})
+        text += missing_artifact_links(text)
+    finally:
+        end_tool_recording(token)
+    with playwright.sync_playwright() as pw:
+        browser = pw.chromium.launch(channel="chrome", headless=True)
+        page = browser.new_page()
+        page.goto(app_url)
+        playwright.expect(page.locator("#microsoft-login")).to_be_enabled()
+        page.evaluate("text => bubble('agent', text)", text)
+        playwright.expect(page.locator(f'.bubble.agent a[href="{url}"]')).to_have_count(1)
+        browser.close()

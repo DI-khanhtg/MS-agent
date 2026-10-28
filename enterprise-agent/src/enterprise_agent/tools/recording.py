@@ -10,7 +10,8 @@ _last_result: ContextVar[dict | None] = ContextVar("last_stream_result", default
 
 def begin_tool_recording(max_calls: int = 24) -> Token[list[dict[str, Any]] | None]:
     _tool_budget.set(max_calls)
-    _last_result.set(None)
+    # Mutate this request-owned holder in place: framework tools can run in child tasks.
+    _last_result.set({"tool_calls": [], "usage": {}, "artifacts": []})
     return _tool_calls.set([])
 
 
@@ -31,8 +32,25 @@ def end_tool_recording(token: Token[list[dict[str, Any]] | None]) -> None:
 
 
 def set_stream_result(calls: list[dict], usage: dict) -> None:
-    _last_result.set({"tool_calls": calls, "usage": usage})
+    result = _last_result.get()
+    if result is None:
+        result = {"artifacts": []}
+        _last_result.set(result)
+    result.update(tool_calls=calls, usage=usage)
 
 
 def get_stream_result() -> dict:
-    return _last_result.get() or {"tool_calls": [], "usage": {}}
+    result = _last_result.get() or {}
+    return {"tool_calls": result.get("tool_calls", []), "usage": result.get("usage", {})}
+
+
+def record_completed_artifact(record: dict[str, Any]) -> None:
+    """Record only a successful server-side artifact receipt, never document content."""
+    result = _last_result.get()
+    if result is not None:
+        result["artifacts"].append(dict(record))
+
+
+def get_completed_artifacts() -> list[dict[str, Any]]:
+    result = _last_result.get() or {}
+    return [dict(record) for record in result.get("artifacts", [])]

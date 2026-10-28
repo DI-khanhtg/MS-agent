@@ -17,6 +17,7 @@ from enterprise_agent.agent.session import (
     PersistentSessionStore,
     SessionEntry,
 )
+from enterprise_agent.artifacts.receipts import missing_artifact_links
 from enterprise_agent.config import Settings
 from enterprise_agent.security.egress import EgressBlockedError, EgressGate
 from enterprise_agent.security.identity import (
@@ -259,7 +260,8 @@ class MicrosoftAgentRuntime:
             async def run():
                 response = await agent.run(safe_message, session=entry.session)
                 timing.finish_reason = _finish_reason(response)
-                if not (getattr(response, "text", None) or "").strip():
+                text = getattr(response, "text", None) or ""
+                if not text.strip() and not missing_artifact_links():
                     timing.finish_reason = timing.finish_reason or "unknown"
                     raise AgentEmptyResponseError("The model returned no answer")
                 return response
@@ -268,8 +270,9 @@ class MicrosoftAgentRuntime:
             assert self._sessions is not None
             await self._sessions.save(request_context.session_storage_key(session_id))
             usage = getattr(response, "usage_details", None) or {}
+            text = getattr(response, "text", None) or ""
             return AgentResult(
-                text=response.text,
+                text=text + missing_artifact_links(text),
                 tool_calls=get_recorded_tool_calls(),
                 usage={
                     k: int(usage.get(k, 0)) for k in ("input_token_count", "output_token_count")
@@ -291,6 +294,7 @@ class MicrosoftAgentRuntime:
                 try:
                     timing.attempts += 1
                     has_text = False
+                    parts = []
                     stream = agent.run(safe_message, session=entry.session, stream=True)
                     async for update in stream:
                         reason = _finish_reason(update)
@@ -300,6 +304,7 @@ class MicrosoftAgentRuntime:
                             timing.mark_first_delta()
                             emitted = True
                             has_text = has_text or bool(update.text.strip())
+                            parts.append(update.text)
                             yield update.text
                     usage = {}
                     if hasattr(stream, "get_final_response"):
@@ -312,7 +317,13 @@ class MicrosoftAgentRuntime:
                         if not has_text and final_text.strip():
                             timing.mark_first_delta()
                             emitted = has_text = True
+                            parts.append(final_text)
                             yield final_text
+                    links = missing_artifact_links("".join(parts))
+                    if links:
+                        timing.mark_first_delta()
+                        emitted = has_text = True
+                        yield links
                     if not has_text:
                         timing.finish_reason = timing.finish_reason or "unknown"
                         raise AgentEmptyResponseError("The model returned no answer")

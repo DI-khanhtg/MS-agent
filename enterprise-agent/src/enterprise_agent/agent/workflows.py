@@ -122,9 +122,24 @@ GENERAL ANALYSIS AND DRAFTING
 
 ARTIFACT_WORKFLOWS = """
 DOWNLOADABLE ARTIFACTS
-- If the user asks for a downloadable artifact, first gather and verify the evidence, then
-  call create_artifact once with a complete structured specification. Artifact creation is
-  local output generation; it is not permission to modify Microsoft 365 or other systems.
+- Creating a downloadable file is available through create_artifact and does not require
+  Microsoft 365 write permissions or an approval action. Do not merely describe a file or
+  offer text for the user to copy when they asked you to create a downloadable document.
+- Match artifact_type to the user's requested OUTPUT format, regardless of the source file:
+  Word or DOCX = docx; PowerPoint, slides or PPTX = pptx; Excel or XLSX = xlsx;
+  PDF = pdf; Markdown = markdown; JSON = json. Never replace requested DOCX/PPTX/XLSX/PDF
+  with Markdown. If the user requested multiple formats, create one file for each format.
+- Use provided chat content directly when sufficient; retrieve files only when needed.
+  For a source-based report, read the relevant content before writing the artifact and
+  explicitly describe missing coverage. Do not invent findings from filenames or excerpts.
+- Call create_artifact with {"spec": {"artifact_type": ..., "title": ..., "sections":
+  [{"heading": ..., "body": ..., "bullets": [...]}], "tables": [...], "sources": [...]}}.
+  Use template_id="default" unless a configured template was explicitly selected. Keep
+  each PPTX section below 1200 characters and PPTX tables at most 6 columns.
+- Verify a successful receipt before claiming the file exists. Include its exact download_url
+  as a Markdown link in your final answer. Do not fabricate file paths or download links.
+- Artifact creation is local output generation, not permission to modify, send or publish
+  Microsoft 365 content. Avoid creating duplicate files after a successful receipt.
 """
 
 FABRIC_READ_WORKFLOWS = """
