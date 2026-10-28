@@ -1,185 +1,37 @@
 # Enterprise Agent
 
-Start with [Local testing](docs/LOCAL_TESTING.md) for the zero-network demo, folder reads,
-voice setup, and all six artifact formats. See [Implementation status](docs/IMPLEMENTATION_STATUS.md)
-and [Operations](docs/OPERATIONS.md) for persistence, limits, backup, tracing, and deployment.
-Open `http://127.0.0.1:8000` after starting the backend to use the local web interface.
+Ứng dụng chat dùng Gemini để đọc Microsoft 365 qua Work IQ, phân tích tài liệu và tạo Word, PDF, Excel, PowerPoint, Markdown hoặc JSON. Dịch vụ dùng chung được cấu hình một lần trên server; người dùng mở website HTTPS rồi đăng nhập Microsoft bằng tài khoản cơ quan/trường học.
 
-For **Sign in with Microsoft** and account-specific Windows folder imports, follow
-[Microsoft login for local development](docs/MICROSOFT_LOGIN.md). Use `http://localhost:8000`
-for that flow, matching the registered SPA callback. The UI manages tokens and OBO access.
+## Dành cho người dùng
 
-Use the chat paperclip to attach PDF, Word(DOCX), PowerPoint(PPTX), Excel(XLSX) or text
-documents. The same bounded reader handles local sources and Work IQ downloads. See
-[Document reading](docs/DOCUMENT_READING.md) for supported content, examples and OCR limits.
+1. Mở địa chỉ HTTPS do chủ dịch vụ cung cấp.
+2. Chọn **Kết nối Microsoft → Đăng nhập Microsoft** và cho phép popup.
+3. Hỏi về tài liệu bạn được quyền đọc, hoặc dán link chia sẻ OneDrive/SharePoint.
+4. Yêu cầu tạo bản nháp và tải kết quả trong **Tài liệu của bạn**.
 
-Self-hosted Phase 0-12 implementation from the repository master plan. It provides a
-FastAPI API, Gemini Flash through Microsoft Agent Framework, read-only Work IQ and
-Fabric Data Agent MCP integrations, Microsoft Entra delegated authentication/OBO,
-multi-source reasoning, optional Foundry IQ retrieval, six artifact formats, voice input,
-durable state, a local web interface, and approval-gated Microsoft 365 actions.
-Live integrations and Azure deployment remain unverified until credentials are connected.
+Mỗi hội thoại có URL riêng dạng `/chat/<session_id>`. Bạn có thể lưu bookmark, tải lại trang và dùng Back/Forward để mở lại hội thoại. Khi tải lại trang, đăng nhập Microsoft lại rồi ứng dụng tự mở hội thoại trong URL. Nút **Hội thoại mới** trở về `/`; link hội thoại chỉ mở được nội dung của tài khoản có quyền truy cập.
 
-## Prerequisites
+Nêu rõ định dạng đầu ra, ví dụ: “Đọc tài liệu này, phân tích rủi ro và xuất một file Word DOCX” hoặc “Tạo cả DOCX và PPTX từ nội dung trên”. Backend trả link tải từ file đã lưu, kể cả khi model bỏ sót link hoặc không trả thêm lời nhắn sau khi tạo file. Link được giữ nguyên khi mở lại lịch sử chat.
 
-- Python 3.11+
-- [`uv`](https://docs.astral.sh/uv/)
-- Portable Python renderers generate XLSX/PPTX; the existing Node renderer is optional
-- A Gemini API key for live chat and live evaluations
-- A Microsoft Entra app and Work IQ tenant access for real Microsoft 365 queries
-- A published Fabric Data Agent on supported capacity for governed business queries
+Người dùng dịch vụ chung không cần cài Python hoặc cung cấp API key. Quản trị viên tổ chức có thể cần chấp thuận ứng dụng. Đăng nhập thành công chưa xác nhận quyền đọc Microsoft 365; quyền tài khoản, consent và điều kiện dịch vụ của tổ chức vẫn áp dụng.
 
-## Setup
+## Chức năng
 
-The repository intentionally contains no `.env.example`. Edit the ignored `.env` file.
-For Gemini chat, create an API key in [Google AI Studio](https://aistudio.google.com/apikey)
-and configure:
+- Đọc tài liệu Microsoft 365 theo quyền người đăng nhập và xử lý link chia sẻ OneDrive/SharePoint.
+- Liệt kê thư mục và thư mục con, đọc nhiều tài liệu trong một lần gọi.
+- Phân tích nội dung và tạo DOCX, PPTX, XLSX, PDF, Markdown hoặc JSON qua chat.
+- Reviewer kiểm tra bản nháp theo bằng chứng; writer biên tập nội dung. Hai công cụ chỉ nhận dữ liệu đã qua bộ lọc egress và không tự truy cập nguồn.
+- Lưu lịch sử, phiên agent và tài liệu theo tenant/tài khoản.
 
-```dotenv
-RUNTIME_MODE=gemini
-GEMINI_API_KEY=PUT_YOUR_GEMINI_API_KEY_HERE
-GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
-GEMINI_MODEL=gemini-3.8-flash
-GEMINI_TIMEOUT_SECONDS=60
-GEMINI_MAX_RETRIES=2
-```
+Xem [kiến trúc ứng dụng](ARCHITECTURE.md) để biết các thành phần và luồng xử lý.
 
-Replace the placeholder key with your real key. `GEMINI_MODEL` can select another model
-available to your key. The client uses Google's
-[OpenAI-compatible Chat Completions API](https://ai.google.dev/gemini-api/docs/openai),
-including streaming and function calling. The OpenAI SDK is the transport library;
-requests go to Google. Gemini tool-call thought signatures are preserved in session history.
-Use `RUNTIME_MODE=demo` to test without API keys, then run:
+## Dữ liệu và giới hạn
 
-```powershell
-uv sync --extra dev
-uv run uvicorn enterprise_agent.api.app:app --reload --host 127.0.0.1 --port 8000
-```
-
-The local setup supports folder reads and artifact generation. Unauthenticated demo use is
-available with `AUTH_ENABLED=false`. `RUNTIME_MODE=gemini` makes external API requests and requires
-a Gemini key. Previous `DEEPSEEK_*` settings are no longer read; deployments must use
-`GEMINI_*` and `RUNTIME_MODE=gemini`. `/health` reports `gemini_configured`.
-See [Work IQ setup](docs/WORKIQ_SETUP.md) and [Fabric setup](docs/FABRIC_SETUP.md) before
-enabling real enterprise data. See [Controlled actions](docs/ACTIONS.md) before enabling
-`workiq_write`.
-
-Health check:
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8000/health
-```
-
-Non-streaming chat:
-
-```powershell
-Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/chat `
-  -ContentType 'application/json' `
-  -Body '{"message":"What is the status of Project Alpha?"}'
-```
-
-When `AUTH_ENABLED=true`, add the API access token:
-
-```powershell
-$headers = @{ Authorization = "Bearer $accessToken" }
-Invoke-RestMethod -Method Post http://127.0.0.1:8000/api/chat `
-  -Headers $headers `
-  -ContentType 'application/json' `
-  -Body '{"message":"Find my latest email about Project Alpha."}'
-```
-
-Streaming uses Server-Sent Events (SSE):
-
-```powershell
-curl.exe -N -X POST http://127.0.0.1:8000/api/chat/stream `
-  -H "Content-Type: application/json" `
-  -d '{"message":"Summarize Project Alpha and its requirements."}'
-```
-
-## Tests and evaluations
-
-Run deterministic unit/API tests and validate the evaluation dataset:
-
-```powershell
-uv run pytest -m "not live"
-uv run ruff check .
-```
-
-After configuring a real key, run the Gemini tool-selection evaluation:
-
-```powershell
-$env:RUN_LIVE_EVALS = "true"
-uv run pytest evals/test_tool_selection_live.py -m live -v
-```
-
-The live suite evaluates every case in `evals/datasets/tool_selection.json` and requires
-the configured pass-rate threshold. It incurs Gemini API usage.
-
-After Entra and Work IQ are configured, validate email, calendar, files, Teams, and people
-using an API access token supplied only through the process environment:
-
-```powershell
-$env:RUN_WORKIQ_LIVE_EVALS = "true"
-$env:WORKIQ_USER_ACCESS_TOKEN = $accessToken
-uv run pytest tests/integration/test_workiq_live.py -m live -v
-uv run pytest evals/test_workiq_tool_selection_live.py -m live -v
-```
-
-Never save `WORKIQ_USER_ACCESS_TOKEN` in `.env` or commit it.
-
-After publishing and configuring a Fabric Data Agent, validate the MCP adapter and routing:
-
-```powershell
-$env:RUN_FABRIC_LIVE_EVALS = "true"
-$env:FABRIC_USER_ACCESS_TOKEN = $accessToken
-uv run pytest tests/integration/test_fabric_live.py -m live -v
-uv run pytest evals/test_fabric_tool_selection_live.py -m live -v
-```
-
-For the combined Work IQ + Fabric + artifact routing evaluation, enable all three groups and
-set `RUN_MULTI_SOURCE_LIVE_EVALS=true`. Access tokens are process-only secrets.
-
-## API
-
-- `GET /` — local chat, folders, voice, downloads, history, and authenticated approval UI.
-- `GET /api/config` — sanitized capabilities for the current runtime.
-- `GET /api/metrics` — token/tool counters and optionally configured model cost estimate.
-- `GET /api/sessions`, `GET /api/sessions/{id}`, `DELETE /api/sessions/{id}` — owner history.
-- `POST /api/voice/transcribe` — bounded WAV input to the Azure Speech adapter.
-- `GET /health` — liveness and configuration status; it never exposes secrets.
-- `GET /api/me` — sanitized identity derived from the validated bearer token.
-- `POST /api/chat` — complete response with session ID and recorded tool calls.
-- `POST /api/chat/stream` — SSE events: `metadata`, `delta`, `done`, or `error`.
-- `POST /api/artifacts` — validate and create Markdown, JSON, DOCX, XLSX, PPTX, or PDF.
-- `GET /api/artifacts` — list artifacts owned by the verified tenant/user.
-- `GET /api/artifacts/{artifact_id}/download` — ownership-checked artifact download.
-- `POST /api/actions/drafts` — validate and create a local action draft.
-- `POST /api/actions/{action_id}/request-approval` — move a draft to pending approval.
-- `GET /api/actions` and `GET /api/actions/{action_id}` — owner-scoped action status.
-- `POST /api/approvals/{action_id}/approve` — authenticated approval and backend execution.
-- `POST /api/approvals/{action_id}/reject` — authenticated rejection without execution.
-
-Send a prior `session_id` to continue a conversation. The server namespaces it by verified
-tenant and user, so two users cannot share conversation state by guessing the same ID.
-Set `STORAGE_BACKEND=database` for durable SDK sessions, conversation history and approvals.
-SQLite is the local default; PostgreSQL is supported with the production extra.
-
-## Security defaults
-
-- Application-only Work IQ access is not implemented; every Work IQ call uses OBO for the
-  verified signed-in user.
-- Work IQ reads expose `fetch`, bounded `fetch_blob` document extraction, read-only
-  `get_schema`, and `search_paths`.
-- Fabric exposes one read-only `fabric_query` adapter and uses the signed-in user's access.
-- Resource paths are allowlisted and bounded; mutation tools and unsafe paths are rejected
-  before any network request.
-- User input, Work IQ output, and Fabric output pass through `config/egress.yaml` before
-  reaching Gemini.
-- The model can draft and request approval, but only an authenticated backend endpoint can
-  approve and execute. Delete is not implemented or exposed.
-- Credentials/secrets are blocked, configured PII is redacted, collections and strings are
-  truncated, and oversized payloads are rejected.
-- Egress audit logs contain metadata and hashed subject identifiers, not raw payloads.
-
-See [Security](docs/SECURITY.md) for the trust boundaries and production checklist.
-See [Artifact generation](docs/ARTIFACTS.md) for the schema, Word demo, templates, and renderers.
+- Microsoft 365 được đọc theo quyền người đăng nhập; ứng dụng không tự cấp quyền vào tài liệu người khác.
+- Tìm tài liệu cá nhân/được chia sẻ qua chỉ mục OneDrive/SharePoint cần Work IQ `retrieve` và điều kiện Copilot Credits của tenant. Mỗi lượt chat tối đa hai truy vấn tìm kiếm; chỉ mục không bảo đảm bao phủ mọi file.
+- Hỗ trợ TXT/MD/CSV/JSON UTF-8, DOCX, PPTX, PDF có chữ và XLSX. Chưa có OCR cho PDF scan; định dạng `.doc`, `.ppt`, `.xls` cần chuyển đổi.
+- Link thư mục SharePoint/OneDrive được liệt kê đệ quy (mặc định 3 cấp, tối đa 5; tối đa 200 mục và 40 thư mục con mỗi lượt), rồi đọc nội dung các file được chọn, mỗi lượt gọi tối đa 6 file. Có Graph `Files.Read` thì liệt kê đầy đủ thư mục lớn; nếu không, chỉ 25 mục đầu mỗi thư mục và agent sẽ báo là chưa đủ.
+- Upload qua trình duyệt tối đa 2 MB/tệp; PDF tối đa 200 trang, PPTX tối đa 200 slide. File qua link trên 4 MB dùng Graph riêng, với giới hạn ứng dụng 20 MB.
+- Lịch sử, phiên và artifact nằm trên máy chạy backend, tách theo tenant/tài khoản. Upload tạo bản sao trên backend; đăng xuất không xóa dữ liệu đã lưu.
+- Nội dung được đọc có thể gửi tới Gemini sau bộ lọc egress. Chủ dịch vụ chịu chi phí Gemini và các dịch vụ Microsoft liên quan.
+- Các file cấu hình riêng, database và đầu ra runtime được Git bỏ qua. Giữ key/secret ở backend.

@@ -79,11 +79,12 @@
 <span class="composer-divider"></span><span class="composer-context" id="composer-context">Không gian local</span></div><button type="submit" id="send" class="button send-button"><span>Gửi yêu cầu</span><svg class="icon"><use href="#i-send"/></svg></button></div>
           </form>
           <div class="composer-meta"><p id="status" role="status" aria-live="polite">Sẵn sàng khi bạn cần.</p><span class="keyboard-hint">Enter để gửi <span>·</span> Shift + Enter để xuống dòng</span></div><p class="disclosure" id="runtime-note">Hãy kiểm tra nội dung và nguồn trước khi sử dụng kết quả.</p>
+          <p id="upload-privacy" class="disclosure upload-privacy" hidden>Tệp bạn chọn được sao chép lên máy chủ chung của dịch vụ. Nội dung được đọc có thể gửi tới AI. Lịch sử và tệp được tách theo tài khoản; đăng xuất không xóa dữ liệu đã lưu.</p>
         </div>
       </div>
       <aside class="context-panel" aria-label="Tài liệu dự án">
         <div class="panel-heading"><span class="section-label">TÀI LIỆU DỰ ÁN</span><svg class="icon"><use href="#i-folder"/></svg></div>
-        <section class="create-document"><h2>Từ nguồn đến bản nháp</h2><p class="muted">Chọn thư mục, định dạng và để trợ lý chuẩn bị nội dung.</p><label for="folder">Thư mục nguồn</label><div class="input-with-icon"><svg class="icon"><use href="#i-folder"/></svg><input id="folder" value="Project-X" placeholder="Tên thư mục" autocomplete="off"></div><label for="format">Định dạng đầu ra</label><select id="format"><option value="docx">Word document (.docx)</option><option value="pdf">PDF document (.pdf)</option><option value="xlsx">Excel workbook (.xlsx)</option><option value="pptx">PowerPoint (.pptx)</option><option value="markdown">Markdown (.md)</option><option value="json">JSON (.json)</option></select><button id="proposal" class="button primary-button"><svg class="icon"><use href="#i-plus"/></svg>Tạo bản nháp<svg class="icon end-icon"><use href="#i-arrow"/></svg></button><button type="button" id="choose-folder" class="button">Chọn thư mục trên máy</button>
+        <section class="create-document"><h2>Từ nguồn đến bản nháp</h2><p class="muted" id="source-description">Chọn thư mục, định dạng và để trợ lý chuẩn bị nội dung.</p><div id="folder-source" hidden><label for="folder">Thư mục nguồn</label><div class="input-with-icon"><svg class="icon"><use href="#i-folder"/></svg><input id="folder" value="Project-X" placeholder="Tên thư mục" autocomplete="off"></div></div><label for="format">Định dạng đầu ra</label><select id="format"><option value="docx">Word document (.docx)</option><option value="pdf">PDF document (.pdf)</option><option value="xlsx">Excel workbook (.xlsx)</option><option value="pptx">PowerPoint (.pptx)</option><option value="markdown">Markdown (.md)</option><option value="json">JSON (.json)</option></select><button id="proposal" class="button primary-button"><svg class="icon"><use href="#i-plus"/></svg>Tạo bản nháp<svg class="icon end-icon"><use href="#i-arrow"/></svg></button><button type="button" id="choose-folder" class="button">Chọn thư mục trên máy</button>
 <input id="folder-upload" type="file" webkitdirectory multiple hidden>
 <p id="folder-hint" class="field-hint">Tài liệu trong thư mục được dùng làm nguồn.</p></section>
         <section class="recent-documents"><div class="panel-heading"><h2>Tài liệu mới nhất</h2><button class="text-button" data-view="documents">Xem tất cả<svg class="icon"><use href="#i-arrow"/></svg></button></div><div id="recent-artifacts" class="file-list"></div></section>
@@ -100,14 +101,14 @@
 </div>
 <dialog id="connection-dialog" aria-labelledby="connection-title">
   <div class="dialog-heading"><div class="connection-icon"><span class="microsoft-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span></div><button type="button" class="icon-button" id="close-connection" aria-label="Đóng cài đặt"><svg class="icon"><use href="#i-close"/></svg></button></div><h2 id="connection-title">Kết nối Microsoft</h2>
-  <p class="muted">Đăng nhập để đọc OneDrive, SharePoint và Microsoft 365 theo quyền tài khoản của bạn.</p>
+  <p class="muted" id="connection-description">Đăng nhập để đọc OneDrive, SharePoint và Microsoft 365 theo quyền tài khoản của bạn.</p>
   <p id="account-name" class="section-label"></p>
   <button id="microsoft-login" class="button primary-button" type="button">Đăng nhập Microsoft</button>
   <button id="microsoft-logout" class="button" type="button" hidden>Đăng xuất</button>
-  <p id="login-setup" class="field-hint"></p>
+  <p id="login-setup" class="field-hint" hidden></p>
   <a id="login-origin" class="text-button" hidden>Mở ứng dụng để đăng nhập</a>
   <p class="dialog-status" id="connection-status" role="status"></p>
-  <details id="manual-connection"><summary>Kết nối nâng cao bằng access token</summary>
+  <details id="manual-connection" hidden><summary>Kết nối nâng cao bằng access token</summary>
     <label for="token">Access token dành cho backend</label>
     <input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="Access token">
     <p class="field-hint">Token chỉ được giữ trong bộ nhớ của trang.</p>

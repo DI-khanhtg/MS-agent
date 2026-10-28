@@ -228,7 +228,10 @@ class LocalDocumentTools:
             raise LocalDocumentError("A verified account is required for imports") from None
         if not principal.authenticated:
             raise LocalDocumentError("A verified account is required for imports")
-        if self.settings.app_env != "development" or "local_read" not in self.settings.tool_groups:
+        if (
+            not self.settings.local_document_access_enabled
+            or "local_read" not in self.settings.tool_groups
+        ):
             raise LocalDocumentError("Local document imports are disabled")
         if not files or len(files) > self.settings.local_max_files:
             raise LocalDocumentError("Import file count exceeds the configured limit")

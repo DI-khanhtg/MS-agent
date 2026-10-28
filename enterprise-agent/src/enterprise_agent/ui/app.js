@@ -7,10 +7,37 @@ let sessionId = null,
     currentView = "chat";
 const microsoftSession = new MicrosoftSession();
 let workspaceGeneration = 0;
+let chatNavigation = 0,
+    chatLoading = false,
+    chatUnavailable = false,
+    pendingChatNavigation = false;
 let importedFolder = null;
+const sharedDeployment = () => (microsoftSession.settings?.deployment_mode || config.deployment_mode) === "shared";
+const uploadsEnabled = () => config.tool_groups?.includes("local_read")
+    && config.auth_enabled
+    && (config.document_uploads_enabled ?? !sharedDeployment());
+const operatorHelp = "Không thể đăng nhập lúc này. Hãy thử lại hoặc liên hệ quản trị viên dịch vụ; tổ chức của bạn có thể cần phê duyệt quyền truy cập.";
+function loginError(error) {
+    if (!sharedDeployment() || ["user_cancelled", "popup_window_error"].includes(error?.errorCode)) return microsoftLoginError(error);
+    return operatorHelp;
+}
+function configureDeployment() {
+    const shared = sharedDeployment();
+    const localSettings = microsoftSession.settings && !shared;
+    $("manual-connection").hidden = !localSettings;
+    $("login-setup").hidden = !localSettings;
+    $("folder-source").hidden = !localSettings;
+    $("connection-description").textContent = shared
+        ? "Dùng tài khoản Microsoft cơ quan hoặc trường học để truy cập những dữ liệu bạn được phép đọc. Tổ chức của bạn có thể cần quản trị viên phê duyệt."
+        : "Đăng nhập để đọc OneDrive, SharePoint và Microsoft 365 theo quyền tài khoản của bạn.";
+    if (shared) {
+        $("composer-context").textContent = "Không gian làm việc của bạn";
+        $("source-description").textContent = "Chọn định dạng để tạo bản nháp từ nội dung hội thoại và tài liệu của bạn.";
+    }
+}
 const headers = async () => {
     try {
-        const token = $("token").value.trim() || await microsoftSession.accessToken();
+        const token = (!sharedDeployment() && $("token").value.trim()) || await microsoftSession.accessToken();
         return token ? {Authorization: "Bearer " + token} : {};
     } catch (error) {
         setMicrosoftConnection(false);
@@ -67,13 +94,98 @@ function showView(view) {
     }
     toggleSidebar(false);
 }
-function resetConversation() {
+function updateChatControls() {
+    $("send").disabled = busy || chatLoading || chatUnavailable;
+    $("proposal").disabled = busy || chatLoading || chatUnavailable;
+}
+function chatIdFromLocation() {
+    const match = location.pathname.match(/^\/chat\/([^/]+)\/?$/);
+    if (!match) return null;
+    try {
+        const id = decodeURIComponent(match[1]);
+        return id.length <= 128 ? id : null;
+    } catch {
+        return null;
+    }
+}
+function setChatLocation(id, replace = false) {
+    const path = id ? "/chat/" + encodeURIComponent(id) : "/";
+    if (location.pathname === path) {
+        if (replace && (location.search || location.hash)) history.replaceState({}, "", path);
+        return;
+    }
+    history[replace ? "replaceState" : "pushState"]({}, "", path);
+}
+function resetConversation({updateUrl = true} = {}) {
+    chatNavigation += 1;
+    chatLoading = false;
+    chatUnavailable = false;
+    pendingChatNavigation = false;
     sessionId = null;
     $("messages").replaceChildren();
     $("welcome").hidden = false;
     for (const button of document.querySelectorAll("#sessions button")) button.classList.remove("selected");
     showView("chat");
+    if (updateUrl) setChatLocation(null);
+    updateChatControls();
 }
+async function openConversation(id, {updateUrl = true} = {}) {
+    resetConversation({updateUrl: false});
+    const generation = workspaceGeneration, navigation = chatNavigation;
+    chatLoading = true;
+    updateChatControls();
+    status("Đang mở hội thoại…");
+    try {
+        const saved = await (await api("/api/sessions/" + encodeURIComponent(id))).json();
+        if (generation !== workspaceGeneration || navigation !== chatNavigation) return false;
+        sessionId = id;
+        for (const turn of saved.messages) bubble(turn.role === "user" ? "user" : "agent", turn.text);
+        for (const button of document.querySelectorAll("#sessions button")) {
+            button.classList.toggle("selected", button.dataset.sessionId === id);
+        }
+        if (updateUrl) setChatLocation(id);
+        status("Đã mở lại hội thoại.");
+        return true;
+    } catch (error) {
+        if (generation !== workspaceGeneration || navigation !== chatNavigation) return false;
+        chatUnavailable = true;
+        status(error.status === 404
+            ? "Không tìm thấy hội thoại hoặc bạn không có quyền truy cập. Hãy tạo hội thoại mới hoặc đăng nhập đúng tài khoản."
+            : error.message, true);
+        return false;
+    } finally {
+        if (generation === workspaceGeneration && navigation === chatNavigation) {
+            chatLoading = false;
+            updateChatControls();
+        }
+    }
+}
+async function restoreChatLocation() {
+    const id = chatIdFromLocation();
+    if (!id) {
+        resetConversation({updateUrl: false});
+        return;
+    }
+    if (microsoftSession.settings?.enabled && !microsoftSession.account && !$("token").value.trim()) {
+        resetConversation({updateUrl: false});
+        status("Đăng nhập Microsoft để mở hội thoại này.");
+        return;
+    }
+    await openConversation(id, {updateUrl: false});
+}
+async function restorePendingChatLocation() {
+    if (!pendingChatNavigation) return;
+    pendingChatNavigation = false;
+    await restoreChatLocation();
+}
+window.addEventListener("popstate", () => {
+    chatNavigation += 1;
+    if (busy) {
+        pendingChatNavigation = true;
+        return;
+    }
+    void restoreChatLocation();
+});
 function scrollToLatest() {
     const scroll = $("conversation-scroll");
     scroll.scrollTop = scroll.scrollHeight;
@@ -128,7 +240,8 @@ function renderFiles(target, files) {
     }
 }
 function configureWorkspace() {
-    const local = config.tool_groups.includes("local_read");
+    const local = config.tool_groups.includes("local_read") && (!sharedDeployment() || uploadsEnabled());
+    configureDeployment();
     $("mode").hidden = config.runtime_mode !== "demo";
     $("mode").title = "Bản demo theo mẫu, không gọi LLM hay Microsoft IQ";
     $("workspace-kind").textContent = config.auth_enabled ? "Truy cập theo tài khoản Microsoft" : "Phiên làm việc local";
@@ -137,8 +250,9 @@ function configureWorkspace() {
     $("speechStatus").textContent = config.speech_configured ? "Azure Speech đã cấu hình. Hỗ trợ WAV 16 kHz, mono, tối đa 60 giây." : "Chưa kết nối Azure Speech. Bạn vẫn có thể nhập yêu cầu bằng văn bản.";
     $("folder").disabled = !local;
     $("folder").readOnly = config.auth_enabled;
-    $("choose-folder").hidden = !(local && config.auth_enabled);
-    $("attach-documents").hidden = !(local && config.auth_enabled);
+    $("choose-folder").hidden = !uploadsEnabled();
+    $("attach-documents").hidden = !uploadsEnabled();
+    $("upload-privacy").hidden = !(sharedDeployment() && uploadsEnabled());
     $("document-upload").accept = (config.document_extensions || []).join(",");
     if (!importedFolder) $("folder-hint").textContent = local && config.auth_enabled
         ? "Chọn thư mục trên máy để thêm tài liệu cho tài khoản này."
@@ -188,7 +302,9 @@ async function api(path, options = {}) {
     return response;
 }
 
-function bubble(role, text) {
+const EMPTY_RESPONSE_MESSAGE = "Agent đã kết thúc nhưng không trả về nội dung. Yêu cầu có thể chưa hoàn tất; hãy kiểm tra mục tài liệu trước khi thử lại.";
+
+function bubble(role, text, pending = false) {
     $("welcome").hidden = true;
     const row = element("div", "message-row " + role + "-row");
     const avatar = element("span", "message-avatar");
@@ -198,9 +314,13 @@ function bubble(role, text) {
     const content = element("div", "message-content");
     const node = document.createElement("div");
     node.className = "bubble " + role;
+    if (pending) {
+        node.classList.add("is-pending");
+        node.setAttribute("aria-busy", "true");
+    }
     if (role === "user") node.textContent = text;
     else {
-        ChatMarkdown.set(node, text);
+        ChatMarkdown.set(node, pending || String(text || "").trim() ? text : EMPTY_RESPONSE_MESSAGE);
         node.addEventListener("click", async event => {
             const link = event.target.closest?.("a[href]");
             if (!link) return;
@@ -241,24 +361,12 @@ async function refresh() {
         sessions.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
         for (const item of sessions) {
             const b = element("button", item.session_id === sessionId ? "selected" : "");
+            b.dataset.sessionId = item.session_id;
             const date = new Date(item.updated_at).toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit" });
             b.append(icon("chat"), element("span", "session-title", "Hội thoại " + date), element("span", "session-turns", item.turns + " lượt"));
             b.onclick = async () => {
                 if (busy) return;
-                const generation = workspaceGeneration;
-                try {
-                    const saved = await (await api("/api/sessions/" + encodeURIComponent(item.session_id))).json();
-                    if (generation !== workspaceGeneration) return;
-                    sessionId = item.session_id;
-                    $("messages").replaceChildren();
-                    showView("chat");
-                    for (const turn of saved.messages) bubble(turn.role === "user" ? "user" : "agent", turn.text);
-                    for (const button of document.querySelectorAll("#sessions button")) button.classList.toggle("selected", button === b);
-                    status("Đã mở lại hội thoại.");
-                } catch (e) {
-                    if (generation !== workspaceGeneration) return;
-                    status(e.message, true);
-                }
+                await openConversation(item.session_id);
             };
             $("sessions").append(b);
         }
@@ -278,7 +386,7 @@ async function refresh() {
     }
 }
 async function send(message) {
-    if (busy) return;
+    if (busy || chatLoading || chatUnavailable) return;
     if (microsoftSession.settings?.enabled && !microsoftSession.account && !$("token").value.trim()) {
         $("connection-dialog").showModal();
         connectionStatus("Đăng nhập Microsoft trước khi gửi yêu cầu.", true);
@@ -289,7 +397,7 @@ async function send(message) {
     $("send").disabled = true;
     $("proposal").disabled = true;
     bubble("user", message);
-    const output = bubble("agent", "");
+    const output = bubble("agent", "", true);
     status("Agent đang xử lý…");
     try {
         const response = await api("/api/chat/stream", {
@@ -328,7 +436,10 @@ async function send(message) {
                 }
                 if (!data) continue;
                 const payload = JSON.parse(data);
-                if (event === "metadata") sessionId = payload.session_id;
+                if (event === "metadata") {
+                    sessionId = payload.session_id;
+                    if (!pendingChatNavigation) setChatLocation(sessionId);
+                }
                 if (event === "delta") ChatMarkdown.append(output, payload.text);
                 if (event === "done") completed = true;
                 if (event === "error") {
@@ -341,22 +452,25 @@ async function send(message) {
             if (done) break;
         }
         if (!completed && !failed) throw new Error("Kết nối bị gián đoạn. Vui lòng thử lại yêu cầu.");
+        if (!failed && !ChatMarkdown.text(output).trim()) throw new Error(EMPTY_RESPONSE_MESSAGE);
         if (!failed) status("Hoàn tất. Bạn có thể xem tài liệu ở mục Tài liệu của bạn.");
         await refresh();
     } catch (e) {
         ChatMarkdown.append(output, (ChatMarkdown.text(output) ? "\n\n" : "") + e.message);
         status(e.message, true);
     } finally {
+        output.classList.remove("is-pending");
+        output.setAttribute("aria-busy", "false");
         ChatMarkdown.flush(output);
         scrollToLatest();
         busy = false;
-        $("send").disabled = false;
-        $("proposal").disabled = false;
+        updateChatControls();
+        await restorePendingChatLocation();
     }
 }
 $("chat").onsubmit = e => {
     e.preventDefault();
-    if (busy) return;
+    if (busy || chatLoading || chatUnavailable) return;
     const text = $("message").value.trim();
     if (text) {
         $("message").value = "";
@@ -370,7 +484,7 @@ $("message").onkeydown = event => {
     }
 };
 $("proposal").onclick = () => {
-    if (config.tool_groups?.includes("local_read")) {
+    if (config.tool_groups?.includes("local_read") && (!sharedDeployment() || importedFolder)) {
         const folder = $("folder").value.trim();
         if (!folder) {
             status("Nhập thư mục nguồn trước khi tạo bản nháp.", true);
@@ -402,6 +516,7 @@ $("connect").onclick = async () => {
         setMicrosoftConnection(Boolean(config.auth_enabled));
         $("connection-dialog").close();
         status(config.auth_enabled ? "Đã cập nhật kết nối Microsoft." : "Đã cập nhật phiên local. Kết nối Microsoft chưa được bật trên máy chủ.");
+        await restoreChatLocation();
     } else {
         $("connection-status").textContent = $("status").textContent;
         $("connection-status").className = "dialog-status error";
@@ -413,6 +528,7 @@ for (const button of document.querySelectorAll("[data-open-connection]")) button
     if (busy) return;
     $("connection-status").textContent = "";
     $("connection-status").className = "dialog-status";
+    if (sharedDeployment() && !microsoftSession.settings?.configured) connectionStatus(operatorHelp, true);
     $("connection-dialog").showModal();
 };
 $("close-connection").onclick = () => $("connection-dialog").close();
@@ -425,7 +541,7 @@ $("connection-dialog").addEventListener("click", event => {
 document.querySelectorAll(".starter-card").forEach(card => {
     card.onclick = () => {
         if (busy) return;
-        if (config.auth_enabled && config.tool_groups.includes("local_read") && !importedFolder) {
+        if (uploadsEnabled() && !importedFolder) {
             $("choose-folder").click();
             status("Chọn thư mục nguồn trước khi dùng gợi ý này.");
             return;
@@ -439,7 +555,7 @@ document.querySelectorAll(".starter-card").forEach(card => {
 $("create-from-library").onclick = () => {
     showView("chat");
     document.querySelector(".create-document").scrollIntoView({ block: "center" });
-    ($("folder").disabled ? $("format") : $("folder")).focus();
+    (sharedDeployment() || $("folder").disabled ? $("format") : $("folder")).focus();
 };
 $("menu-toggle").onclick = () => toggleSidebar(!$("sidebar").classList.contains("open"));
 $("sidebar-overlay").onclick = () => { toggleSidebar(false); $("menu-toggle").focus(); };
@@ -690,7 +806,7 @@ function clearWorkspace() {
     $("mic").replaceChildren(icon("mic"));
     $("mic").setAttribute("aria-label", "Thu âm yêu cầu");
     $("mic").setAttribute("aria-pressed", "false");
-    resetConversation();
+    resetConversation({updateUrl: false});
     for (const id of ["artifacts", "recent-artifacts", "sessions", "actions", "selected-documents"]) $(id).replaceChildren();
     $("selected-documents").hidden = true;
     $("document-count").textContent = "0";
@@ -715,12 +831,15 @@ function showMicrosoftAccount() {
 
 function showSignedOut() {
     config = {};
+    configureDeployment();
     $("mode").hidden = true;
     setMicrosoftConnection(false);
     $("workspace-kind").textContent = "Đăng nhập Microsoft để bắt đầu";
     $("folder").disabled = true;
     $("choose-folder").hidden = true;
     $("attach-documents").hidden = true;
+    $("upload-privacy").hidden = true;
+    if (sharedDeployment()) $("folder-hint").textContent = "Đăng nhập để dùng nguồn dữ liệu được dịch vụ cho phép.";
     status("Đăng nhập Microsoft để truy cập tài liệu của bạn.");
     showMicrosoftAccount();
 }
@@ -732,6 +851,7 @@ $("microsoft-login").onclick = async () => {
     connectionStatus("Đang mở đăng nhập Microsoft…");
     clearWorkspace();
     $("token").value = "";
+    let connected = false;
     try {
         await microsoftSession.login();
         // Only display a connected account once our backend validates its access token.
@@ -741,15 +861,18 @@ $("microsoft-login").onclick = async () => {
         setMicrosoftConnection(true, microsoftSession.account.username);
         $("connection-dialog").close();
         status("Đã kết nối tài khoản Microsoft. Bạn có thể hỏi về OneDrive và SharePoint.");
+        connected = true;
     } catch (error) {
         microsoftSession.account = null;
         clearWorkspace();
         showSignedOut();
-        connectionStatus(microsoftLoginError(error), true);
+        connectionStatus(loginError(error), true);
     } finally {
         busy = false;
         $("microsoft-login").disabled = false;
+        updateChatControls();
     }
+    if (connected) await restoreChatLocation();
 };
 
 $("microsoft-logout").onclick = async () => {
@@ -766,6 +889,9 @@ $("microsoft-logout").onclick = async () => {
     } finally {
         showSignedOut();
         busy = false;
+        pendingChatNavigation = false;
+        setChatLocation(null, true);
+        updateChatControls();
     }
 };
 
@@ -803,6 +929,7 @@ function showSelectedDocuments(files) {
 
 async function importDocuments(selected, folderSelection = false) {
     if (busy) return;
+    if (!uploadsEnabled()) return;
     if (!selected.length) return;
     const supported = new Set(config.document_extensions || []);
     const files = selected.filter(file => {
@@ -870,6 +997,8 @@ async function importDocuments(selected, folderSelection = false) {
         $("document-upload").disabled = false;
         $("folder-upload").value = "";
         $("document-upload").value = "";
+        updateChatControls();
+        await restorePendingChatLocation();
     }
 }
 
@@ -881,14 +1010,22 @@ async function initializeWorkspace() {
     $("choose-folder").hidden = true;
     try {
         const settings = await microsoftSession.initialize();
+        configureDeployment();
         if (!settings.enabled) {
+            if (sharedDeployment()) {
+                showSignedOut();
+                connectionStatus(operatorHelp, true);
+                status("Dịch vụ chưa sẵn sàng. Hãy liên hệ quản trị viên dịch vụ.", true);
+                return;
+            }
             $("login-setup").textContent = "Máy chủ đang dùng phiên local. Đặt AUTH_ENABLED=true để bật đăng nhập Microsoft.";
             await refresh();
+            await restoreChatLocation();
             return;
         }
         clearWorkspace();
         showSignedOut();
-        $("login-setup").textContent = settings.configured
+        $("login-setup").textContent = sharedDeployment() ? "" : settings.configured
             ? "Redirect URI đăng ký trong Entra (SPA): " + settings.redirect_uri
             : "Cần cấu hình ENTRA_SPA_CLIENT_ID và các thiết lập Entra trên máy chủ.";
         if (settings.configured) {
@@ -898,11 +1035,15 @@ async function initializeWorkspace() {
                 $("login-origin").hidden = false;
             }
             $("microsoft-login").disabled = false;
+        } else if (sharedDeployment()) {
+            connectionStatus(operatorHelp, true);
+            status("Dịch vụ chưa sẵn sàng. Hãy liên hệ quản trị viên dịch vụ.", true);
+            return;
         }
         status("Đăng nhập Microsoft để truy cập tài liệu của bạn.");
     } catch (error) {
         showSignedOut();
-        connectionStatus(microsoftLoginError(error), true);
+        connectionStatus(loginError(error), true);
         status("Không khởi tạo được đăng nhập Microsoft.", true);
     }
 }

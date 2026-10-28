@@ -5,6 +5,7 @@ from datetime import timedelta
 from typing import Any
 
 import httpx
+from jsonschema import SchemaError, ValidationError, validate
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
@@ -46,10 +47,16 @@ class WorkIQMCPClient:
             raise WorkIQClientError(str(exc)) from exc
 
     async def _call_with_retries(
-        self, name: str, arguments: dict[str, Any], *, access_token: str, write: bool,
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        access_token: str,
+        write: bool,
     ) -> dict[str, Any]:
         # A timeout after a write can mean it already happened. Never replay mutations.
-        attempts = 1 if write else self.settings.workiq_max_retries + 1
+        # Retrieval may incur Copilot Credits even if its response times out.
+        attempts = 1 if write or name == "retrieve" else self.settings.workiq_max_retries + 1
         for attempt in range(attempts):
             try:
                 result = await self._call_once(name, arguments, access_token=access_token)
@@ -89,7 +96,46 @@ class WorkIQMCPClient:
                         read_timeout_seconds=timedelta(seconds=timeout),
                     ) as session:
                         await session.initialize()
+                        if name == "retrieve":
+                            await self._validate_retrieval_schema(session, arguments)
                         result = await session.call_tool(name, arguments)
         if result.isError:
             raise WorkIQClientError("Work IQ MCP tool returned an error")
         return result.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    @staticmethod
+    async def _validate_retrieval_schema(session: ClientSession, arguments: dict) -> None:
+        # Preview schemas and tool availability vary across tenants. Fail before a billed
+        # invocation if the deployed contract does not support our narrow read request.
+        cursor = None
+        for _ in range(3):
+            listing = await session.list_tools(cursor=cursor)
+            for tool in listing.tools:
+                if tool.name != "retrieve":
+                    continue
+                schema = tool.inputSchema
+                # Accept local definitions; never fetch arbitrary remote schema references.
+                pending = [schema]
+                while pending:
+                    value = pending.pop()
+                    if isinstance(value, dict):
+                        if any(
+                            key in value
+                            and (not isinstance(value[key], str) or not value[key].startswith("#"))
+                            for key in ("$ref", "$dynamicRef")
+                        ):
+                            raise WorkIQClientError(
+                                "Work IQ retrieval schema requires unsupported references"
+                            )
+                        pending.extend(value.values())
+                    elif isinstance(value, list):
+                        pending.extend(value)
+                try:
+                    validate(arguments, schema)
+                except (ValidationError, SchemaError):
+                    raise WorkIQClientError("Work IQ retrieval schema is incompatible") from None
+                return
+            cursor = listing.nextCursor
+            if not cursor:
+                break
+        raise WorkIQClientError("Work IQ indexed retrieval is unavailable for this tenant")

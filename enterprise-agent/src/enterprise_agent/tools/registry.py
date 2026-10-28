@@ -14,6 +14,7 @@ from enterprise_agent.tools.mock import (
 if TYPE_CHECKING:
     from enterprise_agent.actions.tools import ControlledActionTools
     from enterprise_agent.artifacts.tools import ArtifactTools
+    from enterprise_agent.subagents.tools import SubAgentTools
     from enterprise_agent.tools.fabric.tools import FabricReadTools
     from enterprise_agent.tools.workiq.tools import WorkIQReadTools
 
@@ -64,6 +65,7 @@ def create_default_registry(
     action_tools: "ControlledActionTools | None" = None,
     local_tools: Any | None = None,
     knowledge_tools: Any | None = None,
+    subagent_tools: "SubAgentTools | None" = None,
 ) -> ToolRegistry:
     definitions = [
         ToolDefinition("get_current_user", "mock_read", get_current_user),
@@ -72,6 +74,23 @@ def create_default_registry(
         ToolDefinition("get_mock_calendar", "mock_read", get_mock_calendar),
     ]
     if workiq_tools is not None:
+        if hasattr(workiq_tools, "workiq_resolve_document_link"):
+            definitions.append(
+                ToolDefinition(
+                    "workiq_resolve_document_link",
+                    "workiq_read",
+                    workiq_tools.workiq_resolve_document_link,
+                )
+            )
+        for name in ("workiq_list_folder", "workiq_read_documents"):
+            if hasattr(workiq_tools, name):
+                definitions.append(ToolDefinition(name, "workiq_read", getattr(workiq_tools, name)))
+        if hasattr(workiq_tools, "workiq_search_documents"):
+            definitions.append(
+                ToolDefinition(
+                    "workiq_search_documents", "workiq_read", workiq_tools.workiq_search_documents
+                )
+            )
         if hasattr(workiq_tools, "workiq_read_document"):
             definitions.append(
                 ToolDefinition(
@@ -116,6 +135,13 @@ def create_default_registry(
                 artifact_tools.create_artifact,
                 read_only=False,
             )
+        )
+    if subagent_tools is not None:
+        definitions.extend(
+            [
+                ToolDefinition("review_draft", "subagents", subagent_tools.review_draft),
+                ToolDefinition("polish_writing", "subagents", subagent_tools.polish_writing),
+            ]
         )
     if fabric_tools is not None:
         definitions.append(ToolDefinition("fabric_query", "fabric_read", fabric_tools.fabric_query))

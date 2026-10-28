@@ -238,23 +238,32 @@ def _extract_xlsx(content: bytes, text: _Text, warnings: list[str]) -> int:
 
 
 def extract_document(
-    content: bytes, suffix: str, max_chars: int = 100_000
+    content: bytes,
+    suffix: str,
+    max_chars: int = 100_000,
+    *,
+    max_source_bytes: int = _MAX_SOURCE_BYTES,
 ) -> ExtractedDocument:
     """Extract selectable text without executing macros or fetching external resources.
 
-    Source files are capped at 5 MB, expanded Office ZIPs at 50 MB, PDF/PPTX at
+    Source files default to 5 MB (explicit cloud reads may allow up to 20 MB),
+    expanded Office ZIPs at 50 MB, PDF/PPTX at
     200 pages/slides, and text is rejected as soon as the requested limit is exceeded.
     Legacy binary Office files must be converted before reading.
     """
     if not isinstance(max_chars, int) or isinstance(max_chars, bool) or max_chars <= 0:
         raise DocumentExtractionError("max_chars must be a positive integer")
+    if type(max_source_bytes) is not int or not 0 < max_source_bytes <= 20_000_000:
+        raise DocumentExtractionError("max_source_bytes must be from 1 to 20000000")
     suffix = suffix.lower()
     if suffix in {".doc", ".ppt", ".xls"}:
         raise DocumentExtractionError("Convert legacy Office files to DOCX, PPTX or XLSX first")
     if suffix not in SUPPORTED:
         raise DocumentExtractionError("Unsupported document format")
-    if len(content) > _MAX_SOURCE_BYTES:
-        raise DocumentExtractionError("Source document exceeds the 5 MB size limit; split the file")
+    if len(content) > max_source_bytes:
+        raise DocumentExtractionError(
+            "Source document exceeds the configured size limit; split the file"
+        )
     text = _Text(max_chars)
     warnings: list[str] = []
     count = None

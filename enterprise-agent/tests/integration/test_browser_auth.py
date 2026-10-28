@@ -1,6 +1,11 @@
+from types import SimpleNamespace
+
+import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from enterprise_agent.api.app import create_app
+from enterprise_agent.api.auth import browser_auth_configuration
 from enterprise_agent.config import Settings
 
 TENANT = "11111111-1111-1111-1111-111111111111"
@@ -28,6 +33,7 @@ def test_login_bootstrap_is_public_and_only_returns_public_settings():
         response = client.get("/api/auth/config")
         assert response.status_code == 200
         assert response.json() == {
+            "deployment_mode": "local",
             "enabled": True,
             "configured": True,
             "client_id": FRONTEND,
@@ -86,3 +92,47 @@ def test_auth_callback_hosts_uncached_same_origin_bridge():
 def test_disabled_auth_bootstrap_does_not_enable_login():
     with TestClient(create_app(settings=Settings(_env_file=None))) as client:
         assert client.get("/api/auth/config").json()["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_shared_bootstrap_uses_organizations_and_owner_https_callback():
+    import json
+
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            settings=settings(
+                deployment_mode="shared",
+                auth_tenant_mode="organizations",
+                auth_allowed_tenant_ids="",
+                public_base_url="https://assistant.example.com",
+                entra_spa_redirect_uri="https://assistant.example.com/auth/callback",
+            )
+        )
+    )
+    response = await browser_auth_configuration(Request({"type": "http", "app": app}))
+    data = json.loads(response.body)
+    assert data["configured"] is True
+    assert data["deployment_mode"] == "shared"
+    assert data["authority"] == "https://login.microsoftonline.com/organizations"
+    assert data["redirect_uri"] == "https://assistant.example.com/auth/callback"
+    assert data["scopes"] == [f"api://{BACKEND}/access_as_user"]
+
+
+@pytest.mark.asyncio
+async def test_shared_bootstrap_configuration_errors_are_customer_friendly():
+    import json
+
+    app = SimpleNamespace(
+        state=SimpleNamespace(
+            settings=settings(
+                deployment_mode="shared",
+                entra_allowed_client_ids="",
+            )
+        )
+    )
+    response = await browser_auth_configuration(Request({"type": "http", "app": app}))
+    data = json.loads(response.body)
+    assert data["configured"] is False
+    assert data["error"]
+    assert "ENTRA" not in data["error"]
+    assert "AZURE" not in data["error"]

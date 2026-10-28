@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -35,10 +35,12 @@ from enterprise_agent.artifacts.store import ArtifactStore
 from enterprise_agent.artifacts.templates import TemplateCatalog
 from enterprise_agent.artifacts.tools import ArtifactTools
 from enterprise_agent.config import Settings, get_settings
+from enterprise_agent.hosting import ChatCapacity, shared_configuration_errors
 from enterprise_agent.security.egress import EgressGate
 from enterprise_agent.security.token_validation import EntraTokenValidator, TokenValidator
 from enterprise_agent.storage.conversations import ConversationStore
 from enterprise_agent.storage.database import Database
+from enterprise_agent.subagents.tools import SubAgentTools
 from enterprise_agent.telemetry.operations import AuditLog, RateLimiter, audit_sink
 from enterprise_agent.telemetry.tracing import configure_tracing, request_span
 from enterprise_agent.tools.document_reader import SUPPORTED
@@ -48,7 +50,10 @@ from enterprise_agent.tools.fabric.tools import FabricReadTools
 from enterprise_agent.tools.knowledge.client import KnowledgeTools
 from enterprise_agent.tools.local.documents import LocalDocumentTools
 from enterprise_agent.tools.registry import create_default_registry
-from enterprise_agent.tools.workiq.auth import MsalOnBehalfOfTokenProvider
+from enterprise_agent.tools.workiq.auth import (
+    MsalGraphFileTokenProvider,
+    MsalOnBehalfOfTokenProvider,
+)
 from enterprise_agent.tools.workiq.client import WorkIQMCPClient
 from enterprise_agent.tools.workiq.tools import WorkIQReadTools
 from enterprise_agent.voice.transcriber import AzureSpeechTranscriber, Transcriber
@@ -62,12 +67,18 @@ def create_app(
     transcriber: Transcriber | None = None,
 ) -> FastAPI:
     app_settings = settings or get_settings()
+    shared_errors = shared_configuration_errors(app_settings)
+    if shared_errors:
+        raise ValueError(" ".join(shared_errors))
     if app_settings.app_env in {"staging", "production"}:
         if (
             not app_settings.auth_enabled
             or app_settings.runtime_mode == "demo"
             or "mock_read" in app_settings.tool_groups
-            or "local_read" in app_settings.tool_groups
+            or (
+                "local_read" in app_settings.tool_groups
+                and not app_settings.local_document_access_enabled
+            )
             or not app_settings.require_write_approval
             or app_settings.storage_backend != "database"
         ):
@@ -91,6 +102,13 @@ def create_app(
     application.state.audit = AuditLog(app_settings.audit_log_path)
     configure_tracing(app_settings.telemetry_enabled)
     application.state.limiter = RateLimiter(app_settings.rate_limit_per_minute)
+    application.state.shared_request_limiter = RateLimiter(app_settings.shared_requests_per_minute)
+    application.state.shared_chat_limiter = RateLimiter(
+        app_settings.shared_chat_requests_per_minute
+    )
+    application.state.chat_capacity = ChatCapacity(
+        app_settings.shared_max_concurrent_chats, app_settings.shared_max_concurrent_per_user
+    )
     application.state.egress = EgressGate.from_yaml(app_settings.egress_policy_path)
     local_tools = LocalDocumentTools(app_settings, application.state.egress)
     application.state.local_document_tools = local_tools
@@ -137,6 +155,7 @@ def create_app(
             workiq_client,
             workiq_token_provider,
             egress_gate,
+            graph_token_provider=MsalGraphFileTokenProvider(app_settings),
         )
         fabric_tools = FabricReadTools(
             FabricDataAgentClient(app_settings),
@@ -152,6 +171,11 @@ def create_app(
                 action_tools=ControlledActionTools(approval_service),
                 local_tools=local_tools,
                 knowledge_tools=KnowledgeTools(app_settings, egress_gate),
+                subagent_tools=(
+                    SubAgentTools(app_settings, egress_gate)
+                    if app_settings.subagent_is_configured
+                    else None
+                ),
             ),
             egress_gate=egress_gate,
             database=database,
@@ -171,7 +195,14 @@ def create_app(
 
     @application.get("/", include_in_schema=False)
     async def index():
-        return FileResponse(static_root / "index.html")
+        return FileResponse(static_root / "index.html", headers={"Cache-Control": "no-store"})
+
+    @application.get("/chat/{session_id}", include_in_schema=False)
+    async def chat_page(session_id: str):
+        if len(session_id) > 128:
+            raise HTTPException(404, "Page not found")
+        # This is only the public shell. Session data remains behind the owner-scoped API.
+        return FileResponse(static_root / "index.html", headers={"Cache-Control": "no-store"})
 
     @application.get("/auth/callback", include_in_schema=False)
     async def auth_callback():
@@ -183,12 +214,21 @@ def create_app(
     async def request_observability(request: Request, call_next):
         started = time.monotonic()
         request.state.request_id = str(uuid4())
+        shared = app_settings.deployment_mode == "shared"
+        if shared and request.url.path.startswith("/api/"):
+            if not await application.state.shared_request_limiter.allow("all"):
+                return JSONResponse(
+                    {"detail": "Service request limit reached. Try again shortly."},
+                    status_code=429,
+                    headers={"Retry-After": "60"},
+                )
         # Block browser cross-origin writes, even in unauthenticated local development.
         origin = request.headers.get("origin")
         if (
             origin
             and request.method not in {"GET", "HEAD", "OPTIONS"}
-            and origin.rstrip("/") != str(request.base_url).rstrip("/")
+            and origin.rstrip("/")
+            != (app_settings.public_base_url if shared else str(request.base_url).rstrip("/"))
         ):
             return JSONResponse({"detail": "Cross-origin writes are disabled"}, status_code=403)
         try:
@@ -208,6 +248,11 @@ def create_app(
         response.headers["X-Request-ID"] = request.state.request_id
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
+        if shared:
+            if request.url.path.startswith("/api/"):
+                response.headers["Cache-Control"] = "no-store"
+            if app_settings.public_base_url.startswith("https://"):
+                response.headers["Strict-Transport-Security"] = "max-age=31536000"
         microsoft_sources = (
             " https://login.microsoftonline.com" if app_settings.auth_enabled else ""
         )
@@ -236,6 +281,12 @@ def create_app(
             "tool_groups": sorted(app_settings.tool_groups),
             "artifact_formats": ["docx", "pdf", "xlsx", "pptx", "markdown", "json"],
             "document_extensions": sorted(SUPPORTED),
+            "deployment_mode": app_settings.deployment_mode,
+            "document_uploads_enabled": (
+                app_settings.auth_enabled
+                and app_settings.local_document_access_enabled
+                and "local_read" in app_settings.tool_groups
+            ),
         }
 
     @application.get("/api/metrics", tags=["operations"])

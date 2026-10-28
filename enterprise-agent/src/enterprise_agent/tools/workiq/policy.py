@@ -1,9 +1,17 @@
 """Backend-enforced read-only Work IQ path and operation policy."""
 
+import base64
+import binascii
 import re
 from urllib.parse import parse_qsl, unquote, urlsplit
 
-ALLOWED_TOOLS = frozenset({"fetch", "fetch_blob", "get_schema", "search_paths"})
+from enterprise_agent.tools.workiq.links import (
+    SHARED_ITEM_SELECT,
+    SharedLinkError,
+    shared_item_path,
+)
+
+ALLOWED_TOOLS = frozenset({"fetch", "fetch_blob", "get_schema", "search_paths", "retrieve"})
 ALLOWED_WRITE_TOOLS = frozenset({"create_entity", "update_entity", "do_action"})
 ALLOWED_PATH_PREFIXES = ("/me/", "/users/", "/sites/", "/drives/")
 BLOCKED_PATH_SEGMENTS = ("/authentication/", "/serviceprincipals/")
@@ -42,6 +50,25 @@ def validate_read_path(path: str) -> str:
     lowered = f"{decoded_path.casefold().rstrip('/')}/"
     if ".." in decoded_path.split("/"):
         raise WorkIQPolicyError("Path traversal is not allowed")
+    if lowered.startswith("/shares/"):
+        match = re.fullmatch(r"/shares/u!([A-Za-z0-9_-]{1,6000})/driveItem", split.path)
+        if not match:
+            raise WorkIQPolicyError("Only a resolved sharing-URL driveItem lookup is allowed")
+        encoded = match[1]
+        try:
+            original = base64.b64decode(
+                encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True
+            ).decode("utf-8")
+            if shared_item_path(original) != split.path:
+                raise SharedLinkError("invalid_shared_link", "Noncanonical sharing token")
+        except (ValueError, binascii.Error, UnicodeError):
+            raise WorkIQPolicyError("A valid Microsoft sharing-URL token is required") from None
+        query = parse_qsl(split.query, keep_blank_values=True)
+        if query not in ([], [("$select", SHARED_ITEM_SELECT)]):
+            raise WorkIQPolicyError(
+                "Shared-item lookups allow only the bounded filename/item projection"
+            )
+        return path
     if not lowered.startswith(ALLOWED_PATH_PREFIXES):
         raise WorkIQPolicyError("The Work IQ resource path is not allowlisted")
     if any(segment in lowered for segment in BLOCKED_PATH_SEGMENTS):

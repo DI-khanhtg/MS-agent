@@ -56,6 +56,8 @@ async def test_session_recovers_when_deadline_expires_during_database_save(
     agent = RecoveryAgent()
     runtime = MicrosoftAgentRuntime(settings, agent=agent)
     runtime._sessions = PersistentSessionStore(database)
+    # Prepare the session outside the deliberately tiny SAVE deadline.
+    await runtime._sessions.get_or_create("anonymous:anonymous:session")
     started, release, finished = threading.Event(), threading.Event(), threading.Event()
     original_put = database.put
     first = True
@@ -77,6 +79,9 @@ async def test_session_recovers_when_deadline_expires_during_database_save(
         assert await asyncio.to_thread(started.wait, 2)
         with pytest.raises(AgentRequestTimeout):
             await first_turn
+        # Only the first turn tests a deadline. Real Windows SQLite commits can take
+        # longer than 100 ms; recovery should test ordering, not filesystem speed.
+        settings.agent_turn_timeout_seconds = 5
         # A second turn must not mutate the session while its previous commit is in flight.
         second_turn = asyncio.create_task(invoke(runtime, stream))
         await asyncio.sleep(0.02)
@@ -195,6 +200,8 @@ async def test_delete_waits_for_cancelled_save_and_does_not_restore_history(
 @pytest.mark.asyncio
 async def test_turn_queued_behind_delete_uses_fresh_session(tmp_path):
     settings = config(database_path=tmp_path / "state.db")
+    # This scenario verifies deletion/queue ordering and has no timeout assertion.
+    settings.agent_turn_timeout_seconds = 5
     database = Database(settings)
 
     class HistoryAgent(RecoveryAgent):

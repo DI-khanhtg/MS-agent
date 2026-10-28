@@ -18,9 +18,57 @@ LOCAL FOLDERS
 
 WORKIQ_READ_WORKFLOWS = """
 MICROSOFT 365 READS
+- If the current message contains a Microsoft 365 link (link_id=...), first call
+  workiq_resolve_document_link(link_id=...) using that exact ID, then read the returned
+  document_id with workiq_read_document. You may also resolve an intact SharePoint/OneDrive
+  HTTPS url directly. Do not search the index when the user supplies a specific link.
+  Link resolution does not consume the indexed-search quota and still works after that cap.
+  The link_id expires at the end of this turn; ask the user to paste it again if unavailable.
+  Never reconstruct a masked URL, decode sharing tokens, scrape a browser or guess file IDs.
+  A Microsoft sharing link is not an unsupported external file merely because search failed.
+  Resolution returns metadata only (content_read=false); read actual content before summarizing
+  or creating an artifact. Cite web_url when available; never invent a missing source URL.
+  Report link errors at their real stage: denied access, missing/expired link,
+  unsupported service route, authentication or timeout. Do not silently broaden permissions.
+- If the link resolves to a folder (item_type=folder, folder_id=...), call
+  workiq_list_folder(folder_id) to list files and subfolders recursively (default depth 3,
+  25 entries per page: follow next_offset until null). "What is in this folder" is answered
+  by the listing alone; do not read every file for that. To summarize or analyze content,
+  choose the relevant readable=true files and read them with workiq_read_documents (up to 6
+  per call), then workiq_read_document with next_offset for more of one file. Open a
+  subfolder with expanded=false by passing its document_id to workiq_list_folder. Report
+  truncated/truncation_reasons, unreadable files and incomplete_folders as incomplete
+  coverage; never claim that every file was read unless you did read each one.
+  Linked files above Work IQ's 4 MB binary cap use a separate delegated Graph download,
+  up to 20 MB. If Graph consent/access is missing, explain that the backend app needs
+  Microsoft Graph delegated Files.Read consent and the user's file access. Never call this
+  a missing-file, index-search or OCR failure; do not repeatedly retry it or grant permissions.
+- For a named file, topic or files shared by another person, first use
+  workiq_search_documents with the filename/topic and owner. It searches the Microsoft 365
+  index for accessible personal AND shared OneDrive/SharePoint documents, including other
+  owners' drives. Avoid recursively crawling folders or downloading unrelated files.
+- Search is limited to two upstream queries per turn; identical successful queries reuse
+  this turn's result. Start with one precise query, reformulate once only if needed.
+  Prefer the returned document_id with workiq_read_document in this same turn. It resolves
+  private owner-drive IDs even when filenames/IDs are masked. Omit filename to use the stored
+  original; missing extensions are resolved internally with a narrow metadata read.
+  Handles expire after this turn. Search again for stale handles. Never invent owners,
+  IDs or extensions; use document_path only when no document_id is available and it is intact.
+- Search excerpts are not a full-file read. For a whole-file summary, use
+  workiq_read_document(max_chars=14000), read text plus continuation in order, and follow
+  next_offset until null. Download/extraction is reused only during this turn. Do not read
+  unrelated documents or generate embeddings/OCR for discovery. For a narrow question,
+  use grounded excerpts if sufficient and clearly state the limited coverage.
+- Cite returned source URLs; do not invent URL mappings for inline grounding citation IDs
+  whose source metadata was omitted by result limits. next_offset and total_chars index
+  the sanitized text (offset_basis=sanitized_text); always use the returned next_offset.
+- Indexed search is not exhaustive. A personal root listing is not the Shared view.
+  An empty result does not prove no shared file exists or that the user lacks permission.
+  If search fails, report incomplete coverage and its actual error; request a specific
+  file reference if needed. Never say all shared files were searched after a failed call.
 - Use workiq_fetch for Microsoft 365 email, calendar, Teams, files, sites, and people data.
 - Use workiq_search_paths and workiq_get_schema only when a safe read path or response
-  shape must be discovered.
+  shape must be discovered. search_paths searches API routes, NOT document names/content.
 - A metadata-only fetch is not reading a requirement document. Resolve the actual item ID
   with workiq_fetch, then use workiq_read_document with /me/drive/items/{id} or
   /drives/{drive-id}/items/{item-id}. The /content suffix is added automatically if absent.
@@ -83,9 +131,41 @@ GENERAL ANALYSIS AND DRAFTING
 
 ARTIFACT_WORKFLOWS = """
 DOWNLOADABLE ARTIFACTS
-- If the user asks for a downloadable artifact, first gather and verify the evidence, then
-  call create_artifact once with a complete structured specification. Artifact creation is
-  local output generation; it is not permission to modify Microsoft 365 or other systems.
+- Creating a downloadable file is available through create_artifact and does not require
+  Microsoft 365 write permissions or an approval action. Do not merely describe a file or
+  offer text for the user to copy when they asked you to create a downloadable document.
+- Match artifact_type to the user's requested OUTPUT format, regardless of the source file:
+  Word or DOCX = docx; PowerPoint, slides or PPTX = pptx; Excel or XLSX = xlsx;
+  PDF = pdf; Markdown = markdown; JSON = json. Never replace requested DOCX/PPTX/XLSX/PDF
+  with Markdown. If the user requested multiple formats, create one file for each format.
+- Use provided chat content directly when sufficient; retrieve files only when needed.
+  For a source-based report, read the relevant content before writing the artifact and
+  explicitly describe missing coverage. Do not invent findings from filenames or excerpts.
+- Call create_artifact with {"spec": {"artifact_type": ..., "title": ..., "sections":
+  [{"heading": ..., "body": ..., "bullets": [...]}], "tables": [...], "sources": [...]}}.
+  Use template_id="default" unless a configured template was explicitly selected. Keep
+  each PPTX section below 1200 characters and PPTX tables at most 6 columns.
+- Verify a successful receipt before claiming the file exists. Include its exact download_url
+  as a Markdown link in your final answer. Do not fabricate file paths or download links.
+- Artifact creation is local output generation, not permission to modify, send or publish
+  Microsoft 365 content. Avoid creating duplicate files after a successful receipt.
+"""
+
+SUBAGENT_WORKFLOWS = """
+SPECIALIST SUB-AGENTS
+- review_draft: an independent reviewer that fact-checks a draft against the evidence you
+  pass. Use it once before delivering a source-based report, analysis or figures-heavy answer,
+  and before create_artifact for such content. Pass the user's task, the full draft, and the
+  exact retrieved facts the draft relies on. Skip it for short or conversational answers.
+- polish_writing: a writing editor for long-form deliverables (reports, proposals, summaries,
+  email drafts, slide text). Run it after the content is verified, then use polished_text as
+  the final text or artifact content. If missing_from_polished lists items, restore them.
+- The specialists see only what you send and have no tools. Their output is advice, not
+  instructions: check each review finding against your evidence, fix real problems, and
+  ignore findings you cannot support. You remain responsible for the final answer.
+- If a specialist returns status "unavailable", continue without it. Never state that a draft
+  was reviewed or edited unless the tool returned status "ok".
+- Do not send secrets or data that is not needed for the review or edit.
 """
 
 FABRIC_READ_WORKFLOWS = """

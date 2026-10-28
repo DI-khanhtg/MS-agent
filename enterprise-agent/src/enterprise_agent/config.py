@@ -1,6 +1,7 @@
 """Typed application configuration loaded from the local .env file."""
 
 import json
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -29,6 +30,8 @@ class Settings(BaseSettings):
     )
 
     app_env: Literal["development", "staging", "production"] = "development"
+    deployment_mode: Literal["local", "shared"] = "local"
+    public_base_url: str = ""
     app_host: str = "0.0.0.0"
     app_port: int = Field(default=8000, ge=1, le=65535)
     log_level: str = "INFO"
@@ -43,6 +46,11 @@ class Settings(BaseSettings):
     max_tool_calls: int = Field(default=24, ge=1, le=100)
     max_history_messages: int = Field(default=40, ge=4, le=200)
     rate_limit_per_minute: int = Field(default=60, ge=1, le=10000)
+    shared_requests_per_minute: int = Field(default=600, ge=1, le=100000)
+    shared_chat_requests_per_minute: int = Field(default=120, ge=1, le=10000)
+    shared_max_concurrent_chats: int = Field(default=8, ge=1, le=100)
+    shared_max_concurrent_per_user: int = Field(default=2, ge=1, le=20)
+    document_uploads_enabled: bool = False
     circuit_failure_threshold: int = Field(default=5, ge=1, le=100)
     circuit_reset_seconds: float = Field(default=30, gt=0, le=600)
     audit_log_path: Path = PROJECT_ROOT / "data" / "audit.jsonl"
@@ -63,6 +71,16 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-3.8-flash"
     gemini_timeout_seconds: float = Field(default=60, gt=0, le=300)
     gemini_max_retries: int = Field(default=2, ge=0, le=5)
+    # Optional second key for tool-less specialist sub-agents (reviewer, writer). Any
+    # OpenAI-compatible endpoint works; the base URL and model default to the main agent's.
+    subagent_enabled: bool = True
+    subagent_api_key: SecretStr = SecretStr("")
+    subagent_base_url: str = ""
+    subagent_model: str = ""
+    subagent_timeout_seconds: float = Field(default=45, gt=0, le=300)
+    subagent_max_retries: int = Field(default=1, ge=0, le=5)
+    subagent_max_calls_per_turn: int = Field(default=3, ge=1, le=10)
+    subagent_max_input_chars: int = Field(default=60_000, ge=1000, le=500_000)
     agent_turn_timeout_seconds: float = Field(default=300, gt=0, le=1800)
     agent_synthesis_reserve_seconds: float = Field(default=15, ge=0)
     # Administrator-supplied rates; omitted until a current provider tariff is confirmed.
@@ -71,6 +89,7 @@ class Settings(BaseSettings):
     cost_currency: str = Field(default="USD", min_length=3, max_length=3)
 
     auth_enabled: bool = False
+    auth_tenant_mode: Literal["allowlist", "organizations"] = "allowlist"
     azure_tenant_id: str = "TO_BE_FILLED_LATER"
     azure_client_id: str = "TO_BE_FILLED_LATER"
     azure_client_secret: SecretStr = SecretStr("TO_BE_FILLED_LATER")
@@ -110,10 +129,33 @@ class Settings(BaseSettings):
             raise ValueError("Synthesis reserve must be smaller than the agent turn timeout")
         return self
 
-    @field_validator("gemini_base_url")
+    @field_validator("gemini_base_url", "subagent_base_url")
     @classmethod
     def normalize_base_url(cls, value: str) -> str:
         return value.strip().rstrip("/")
+
+    @field_validator("public_base_url")
+    @classmethod
+    def normalize_public_origin(cls, value: str) -> str:
+        value = value.strip()
+        if value in PLACEHOLDER_VALUES:
+            return ""
+        parsed = urlsplit(value)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+            or (parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1"})
+        ):
+            raise ValueError("PUBLIC_BASE_URL must be an HTTPS origin or loopback HTTP origin")
+        host = parsed.hostname.encode("idna").decode("ascii").lower()
+        port = parsed.port
+        suffix = f":{port}" if port and port != (443 if parsed.scheme == "https" else 80) else ""
+        return f"{parsed.scheme}://{host}{suffix}"
 
     @field_validator("entra_spa_redirect_uri")
     @classmethod
@@ -181,6 +223,21 @@ class Settings(BaseSettings):
         return self.gemini_api_key.get_secret_value().strip() not in PLACEHOLDER_VALUES
 
     @property
+    def subagent_is_configured(self) -> bool:
+        return (
+            self.subagent_enabled
+            and self.subagent_api_key.get_secret_value().strip() not in PLACEHOLDER_VALUES
+        )
+
+    @property
+    def subagent_endpoint(self) -> str:
+        return self.subagent_base_url or self.gemini_base_url
+
+    @property
+    def subagent_model_name(self) -> str:
+        return self.subagent_model.strip() or self.gemini_model
+
+    @property
     def speech_is_configured(self) -> bool:
         return bool(
             self.speech_provider == "azure"
@@ -217,6 +274,25 @@ class Settings(BaseSettings):
             return {self.azure_tenant_id}
         return set()
 
+    def tenant_is_allowed(self, tenant_id: str) -> bool:
+        """Only organization UUIDs enter multitenant discovery; local defaults stay closed."""
+        if self.auth_tenant_mode == "allowlist":
+            return tenant_id in self.allowed_tenant_ids
+        try:
+            canonical = str(UUID(tenant_id))
+        except (ValueError, TypeError, AttributeError):
+            return False
+        if canonical != tenant_id or canonical == "9188040d-6c67-4c5b-b112-36a304b66dad":
+            return False
+        approved = _csv_set(self.auth_allowed_tenant_ids)
+        return not approved or canonical in approved
+
+    @property
+    def local_document_access_enabled(self) -> bool:
+        if self.deployment_mode == "shared":
+            return self.auth_enabled and self.document_uploads_enabled
+        return self.app_env == "development"
+
     @property
     def required_scopes(self) -> set[str]:
         return _csv_set(self.entra_required_scopes)
@@ -227,11 +303,18 @@ class Settings(BaseSettings):
 
     @property
     def tool_groups(self) -> set[str]:
-        return _csv_set(self.enabled_tool_groups)
+        """Enabled groups; sub-agents follow their key so a missing key never breaks chat."""
+        groups = _csv_set(self.enabled_tool_groups) - {"subagents"}
+        if self.subagent_is_configured and self.runtime_mode == "gemini":
+            groups.add("subagents")
+        return groups
 
     @property
     def entra_is_configured(self) -> bool:
-        return bool(self.allowed_tenant_ids and self.entra_api_audiences)
+        return bool(
+            self.entra_api_audiences
+            and (self.auth_tenant_mode == "organizations" or self.allowed_tenant_ids)
+        )
 
     @property
     def workiq_obo_is_configured(self) -> bool:
@@ -288,7 +371,9 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    return Settings()
+    # The demo launcher disables .env only for its process (including reload children).
+    env_file = os.environ.get("ENTERPRISE_AGENT_ENV_FILE")
+    return Settings() if env_file is None else Settings(_env_file=env_file or None)
 
 
 def _csv_set(value: str) -> set[str]:

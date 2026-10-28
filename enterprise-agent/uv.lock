@@ -562,6 +562,7 @@ source = { editable = "." }
 dependencies = [
     { name = "agent-framework-openai" },
     { name = "fastapi" },
+    { name = "jsonschema" },
     { name = "mcp" },
     { name = "msal" },
     { name = "openpyxl" },
@@ -604,6 +605,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.116,<1" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28,<1" },
     { name = "httpx2", marker = "extra == 'dev'", specifier = ">=2.12,<3" },
+    { name = "jsonschema", specifier = ">=4.20,<5" },
     { name = "mcp", specifier = ">=1.30,<2" },
     { name = "msal", specifier = ">=1.38,<2" },
     { name = "openai", marker = "extra == 'dev'", specifier = ">=3.13,<4" },

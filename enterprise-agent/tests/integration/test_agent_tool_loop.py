@@ -18,6 +18,7 @@ from enterprise_agent.security.identity import (
     set_request_context,
 )
 from enterprise_agent.storage.database import Database
+from enterprise_agent.telemetry.operations import AuditLog, audit_sink
 from enterprise_agent.tools.local.documents import LocalDocumentTools
 from enterprise_agent.tools.recording import get_stream_result, record_tool_call
 from enterprise_agent.tools.registry import ToolRegistry, create_default_registry
@@ -81,13 +82,28 @@ async def _run_script(
     registry: ToolRegistry | None = None,
     enabled_tool_groups: str = "mock_read",
     context: RequestContext | None = None,
+    message: str = "scripted test",
+    stream: bool = False,
 ) -> tuple[AgentResult, list[dict[str, Any]]]:
     requests: list[dict[str, Any]] = []
 
     async def handler(request: httpx2.Request) -> httpx2.Response:
         requests.append(json.loads(request.content))
         output = outputs[len(requests) - 1]
-        return httpx2.Response(200, json=_response(output, len(requests)))
+        response = _response(output, len(requests))
+        if stream:
+            choice = response["choices"][0]
+            delta = choice.pop("message")
+            for index, call in enumerate(delta["tool_calls"]):
+                call["index"] = index
+            choice["delta"] = delta
+            response["object"] = "chat.completion.chunk"
+            return httpx2.Response(
+                200,
+                text=f"data: {json.dumps(response)}\n\ndata: [DONE]\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx2.Response(200, json=response)
 
     http_client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
     openai_client = AsyncOpenAI(
@@ -110,10 +126,65 @@ async def _run_script(
     )
     runtime = MicrosoftAgentRuntime(settings, agent=agent)
     try:
-        result = await runtime.chat("scripted test", "scripted-session", context)
+        if stream:
+            text = "".join(
+                [part async for part in runtime.stream_chat(message, "scripted-session", context)]
+            )
+            details = get_stream_result()
+            result = AgentResult(
+                text=text, tool_calls=details["tool_calls"], usage=details["usage"]
+            )
+        else:
+            result = await runtime.chat(message, "scripted-session", context)
     finally:
         await openai_client.close()
     return result, requests
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_missing_section_heading_creates_word_without_repeating_the_failed_call(
+    tmp_path, stream
+):
+    from docx import Document
+
+    from enterprise_agent.api.app import create_app
+    from enterprise_agent.artifacts.tools import ArtifactTools
+
+    settings = Settings(
+        _env_file=None,
+        runtime_mode="demo",
+        artifact_storage_path=tmp_path / "artifacts",
+        audit_log_path=tmp_path / "audit.jsonl",
+    )
+    service = create_app(settings=settings).state.artifact_service
+    spec = {
+        "artifact_type": "docx",
+        "title": "Verified report",
+        "language": "vi",
+        "sections": [
+            *[{"heading": f"Topic {i}", "body": "Verified content"} for i in range(1, 7)],
+            {"body": "Final verified conclusion"},
+        ],
+    }
+    result, requests = await _run_script(
+        [
+            [_function_call("create_artifact", {"spec": spec}, 1)],
+            [_message("The report is ready.", 2)],
+        ],
+        registry=create_default_registry(artifact_tools=ArtifactTools(service)),
+        enabled_tool_groups="artifact_generation",
+        stream=stream,
+    )
+    assert len(requests) == 2
+    assert [call["name"] for call in result.tool_calls] == ["create_artifact"]
+    records = service.store.list(Principal.anonymous())
+    assert len(records) == 1
+    assert records[0].download_url in result.text
+    _, path = service.store.get(records[0].artifact_id, Principal.anonymous())
+    paragraphs = [paragraph.text for paragraph in Document(path).paragraphs]
+    assert "Mục 7" in paragraphs
+    assert "Final verified conclusion" in paragraphs
 
 
 @pytest.mark.asyncio
@@ -343,6 +414,80 @@ async def test_invalid_arguments_are_returned_to_model() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("finish_reason", ["stop", "length", "malformed_function_call"])
+async def test_real_framework_empty_answer_after_tool_is_not_success(
+    tmp_path, stream, finish_reason
+):
+    from enterprise_agent.agent.runtime import AgentUpstreamError
+
+    requests = []
+    settings = Settings(
+        _env_file=None,
+        gemini_api_key="test-key",
+        gemini_max_retries=2,
+        enabled_tool_groups="mock_read",
+    )
+
+    async def handler(request):
+        requests.append(json.loads(request.content))
+        assert len(requests) <= 2, "An empty answer must not replay the tool turn"
+        first = len(requests) == 1
+        output = [_function_call("get_project_status", {"project_id": "alpha"}, 1)] if first else []
+        response = _response(output, len(requests))
+        response["choices"][0]["finish_reason"] = "tool_calls" if first else finish_reason
+        if not stream:
+            return httpx2.Response(200, json=response)
+        choice = response["choices"][0]
+        delta = choice["message"]
+        for index, call in enumerate(delta["tool_calls"]):
+            call["index"] = index
+        base = {k: v for k, v in response.items() if k not in ("choices", "usage")}
+        base["object"] = "chat.completion.chunk"
+        chunks = [
+            {**base, "choices": [{"index": 0, "delta": delta, "finish_reason": None}]},
+            {
+                **base,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": choice["finish_reason"]}],
+                "usage": response["usage"],
+            },
+        ]
+        body = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks) + "data: [DONE]\n\n"
+        return httpx2.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    client = AsyncOpenAI(
+        api_key="test-key",
+        base_url=settings.gemini_base_url,
+        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(handler)),
+    )
+    with patch("enterprise_agent.agent.factory.AsyncOpenAI", return_value=client):
+        framework_client = create_gemini_client(settings)
+    agent = create_enterprise_agent(settings, create_default_registry(), client=framework_client)
+    runtime = MicrosoftAgentRuntime(settings, agent=agent)
+    sink = AuditLog(tmp_path / "audit.jsonl")
+    token = audit_sink.set(sink)
+    try:
+        with pytest.raises(AgentUpstreamError) as error:
+            if stream:
+                _ = [part async for part in runtime.stream_chat("Read Alpha", "empty-turn")]
+            else:
+                await runtime.chat("Read Alpha", "empty-turn")
+        assert type(error.value).__name__ == "AgentEmptyResponseError"
+    finally:
+        audit_sink.reset(token)
+        await client.close()
+    assert len(requests) == 2
+    assert requests[1]["messages"][-1]["role"] == "tool"
+    turn = next(
+        json.loads(line)
+        for line in sink.path.read_text().splitlines()
+        if json.loads(line)["event"] == "agent_turn"
+    )
+    assert turn["status"] == "error"
+    assert turn["finish_reason"] == finish_reason
+
+
+@pytest.mark.asyncio
 async def test_tool_failure_can_trigger_replan() -> None:
     result, requests = await _run_script(
         [
@@ -412,6 +557,219 @@ async def test_workiq_result_is_redacted_before_second_model_request() -> None:
     second_request = json.dumps(requests[1])
     assert "sensitive@example.com" not in second_request
     assert "[REDACTED]" in second_request
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lookup", ["search", "link", "large_link"])
+async def test_shared_pptx_search_read_and_word_export_through_real_framework(
+    document_files, tmp_path, monkeypatch, lookup
+):
+    import io
+    from types import SimpleNamespace
+    from zipfile import ZIP_STORED, ZipFile
+
+    import httpx
+    from docx import Document
+
+    from enterprise_agent.artifacts.renderers import create_renderer_registry
+    from enterprise_agent.artifacts.service import ArtifactService
+    from enterprise_agent.artifacts.store import ArtifactStore
+    from enterprise_agent.artifacts.templates import TemplateCatalog
+    from enterprise_agent.artifacts.tools import ArtifactTools
+
+    filename, content, expected = document_files["pptx"]
+    if lookup == "large_link":
+        buffer = io.BytesIO(content)
+        with ZipFile(buffer, "a", compression=ZIP_STORED) as package:
+            package.writestr("ppt/media/test-unused.bin", b"x" * 5_000_001)
+        content = buffer.getvalue()
+    path = "/drives/1234567890123456/items/9876543210"
+    reference = "wiq_" + "a" * 32
+    monkeypatch.setattr(
+        "enterprise_agent.agent.budget.uuid4", lambda: SimpleNamespace(hex="a" * 32)
+    )
+    source = "https://company.sharepoint.com/shared/objectives.pptx"
+    sharing_url = (
+        "https://company-my.sharepoint.com/:p:/g/personal/owner/123456789012?e=privateShareToken"
+    )
+    calls = []
+
+    class Client:
+        async def call_tool(self, name, arguments, *, access_token):
+            calls.append((name, arguments))
+            if name == "fetch":
+                assert lookup in ("link", "large_link")
+                assert arguments["entityUrls"][0].startswith("/shares/u!")
+                return {
+                    "structuredContent": {
+                        "results": [
+                            {
+                                "statusCode": 200,
+                                "data": {
+                                    "id": "9876543210",
+                                    "parentReference": {"driveId": "1234567890123456"},
+                                    "name": filename,
+                                    "file": {},
+                                    "webUrl": source,
+                                    "size": len(content),
+                                },
+                            }
+                        ]
+                    }
+                }
+            if name == "retrieve":
+                return {
+                    "structuredContent": {
+                        "application/vnd.ms-workiq.retrieval": {
+                            "markdown": "Relevant shared slide [^h1]",
+                            "retrievalHits": [
+                                {
+                                    "id": "h1",
+                                    "entityUrl": path,
+                                    "webUrl": source,
+                                    "resourceMetadata": {
+                                        "document": {
+                                            "title": filename,
+                                            "authorName": "Shared Owner",
+                                        }
+                                    },
+                                }
+                            ],
+                            "resultCount": 1,
+                            "stoppedReason": "completed",
+                        }
+                    }
+                }
+            assert name == "fetch_blob"
+            assert arguments == {"path": path + "/content"}
+            return {"structuredContent": {"base64Content": base64.b64encode(content).decode()}}
+
+    provider = AsyncMock()
+    provider.get_token.return_value = "delegated-token"
+    settings = Settings(_env_file=None)
+    graph_provider = AsyncMock()
+    graph_provider.get_token.return_value = "graph-only-token"
+    reader = WorkIQReadTools(
+        Client(),
+        provider,
+        EgressGate.from_yaml(settings.egress_policy_path),
+        graph_token_provider=graph_provider,
+    )
+    if lookup == "large_link":
+        actual_http_client = httpx.AsyncClient
+
+        def graph_handler(request):
+            assert request.url.host == "graph.microsoft.com"
+            assert request.headers["authorization"] == "Bearer graph-only-token"
+            return httpx.Response(200, content=content)
+
+        class GraphHTTPClient(actual_http_client):
+            def __init__(self, **kwargs):
+                super().__init__(transport=httpx.MockTransport(graph_handler), **kwargs)
+
+        monkeypatch.setattr(
+            "enterprise_agent.tools.workiq.download.httpx.AsyncClient", GraphHTTPClient
+        )
+    store = ArtifactStore(tmp_path / "artifacts")
+    artifacts = ArtifactTools(
+        ArtifactService(
+            store,
+            TemplateCatalog.from_yaml(
+                settings.artifact_template_config_path, settings.artifact_template_root
+            ),
+            create_renderer_registry(
+                node_executable="node", artifact_tool_entrypoint=None, timeout_seconds=30
+            ),
+        )
+    )
+    current = Principal(
+        "tenant-a",
+        "user-a",
+        "subject-a",
+        None,
+        frozenset({"access_as_user"}),
+        "frontend",
+        "incoming-token",
+    )
+    result, requests = await _run_script(
+        [
+            [
+                _function_call(
+                    "workiq_search_documents"
+                    if lookup == "search"
+                    else "workiq_resolve_document_link",
+                    {"query": "objectives.pptx shared by Shared Owner"}
+                    if lookup == "search"
+                    else {"link_id": reference},
+                    1,
+                )
+            ],
+            [
+                _function_call(
+                    "workiq_read_document",
+                    {"document_id": reference, "max_chars": 14000},
+                    2,
+                )
+            ],
+            [
+                _function_call(
+                    "create_artifact",
+                    {
+                        "spec": {
+                            "artifact_type": "docx",
+                            "title": "Shared slide summary",
+                            "sections": [{"heading": "Summary", "body": expected}],
+                            "sources": [{"label": filename, "reference": source}],
+                        }
+                    },
+                    3,
+                )
+            ],
+            [_message("The Word summary is ready.", 4)],
+        ],
+        registry=create_default_registry(reader, artifact_tools=artifacts),
+        enabled_tool_groups="workiq_read,artifact_generation",
+        context=RequestContext(current),
+        message="Summarize this PowerPoint and create Word: " + sharing_url
+        if lookup != "search"
+        else "scripted test",
+    )
+    search = json.loads(next(m["content"] for m in requests[1]["messages"] if m["role"] == "tool"))[
+        "data"
+    ]
+    assert (
+        search["documents"][0]["document_id"] if lookup == "search" else search["document_id"]
+    ) == reference
+    assert path not in json.dumps(requests)
+    if lookup != "search":
+        assert sharing_url not in json.dumps(requests)
+        assert "privateShareToken" not in json.dumps(requests)
+        assert "link_id=" + reference in json.dumps(requests[0])
+    read = json.loads([m["content"] for m in requests[2]["messages"] if m["role"] == "tool"][-1])[
+        "data"
+    ]
+    assert expected in read["text"]
+    assert read["extraction"]["format"] == "pptx"
+    assert [name for name, _ in calls] == (
+        ["fetch"]
+        if lookup == "large_link"
+        else [
+            "retrieve" if lookup == "search" else "fetch",
+            "fetch_blob",
+        ]
+    )
+    assert "graph-only-token" not in json.dumps(requests)
+    records = store.list(current)
+    assert len(records) == 1
+    _, output_path = store.get(records[0].artifact_id, current)
+    paragraphs = "\n".join(paragraph.text for paragraph in Document(output_path).paragraphs)
+    assert expected in paragraphs
+    assert source in paragraphs
+    assert [call["name"] for call in result.tool_calls] == [
+        "workiq_search_documents" if lookup == "search" else "workiq_resolve_document_link",
+        "workiq_read_document",
+        "create_artifact",
+    ]
 
 
 @pytest.mark.asyncio

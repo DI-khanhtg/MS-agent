@@ -1,4 +1,5 @@
 .env
+.env.*
 .venv/
 !src/enterprise_agent/artifacts/
 !src/enterprise_agent/artifacts/**

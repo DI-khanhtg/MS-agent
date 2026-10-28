@@ -22,6 +22,7 @@ async def browser_auth_configuration(request: Request) -> JSONResponse:
     """Public PKCE bootstrap; backend credentials and tokens never leave the server."""
     settings: Settings = request.app.state.settings
     result = {
+        "deployment_mode": settings.deployment_mode,
         "enabled": settings.auth_enabled,
         "configured": False,
         "client_id": None,
@@ -40,24 +41,29 @@ async def browser_auth_configuration(request: Request) -> JSONResponse:
             if client_id not in settings.allowed_client_ids:
                 raise ValueError("ENTRA_SPA_CLIENT_ID must be in ENTRA_ALLOWED_CLIENT_IDS")
             client_id = str(UUID(client_id))
-            tenant_id = str(UUID(settings.azure_tenant_id))
             backend_id = str(UUID(settings.azure_client_id))
-            if (
-                tenant_id not in settings.allowed_tenant_ids
-                or backend_id not in settings.entra_api_audiences
-                or not settings.required_scopes
-            ):
+            if backend_id not in settings.entra_api_audiences or not settings.required_scopes:
                 raise ValueError("Configure the backend audience, allowed tenant and API scopes")
+            if settings.auth_tenant_mode == "organizations":
+                authority_tenant = "organizations"
+            else:
+                authority_tenant = str(UUID(settings.azure_tenant_id))
+                if not settings.tenant_is_allowed(authority_tenant):
+                    raise ValueError("Configure an allowed tenant")
             result.update(
                 configured=True,
                 client_id=client_id,
-                authority=f"https://login.microsoftonline.com/{tenant_id}",
+                authority=f"https://login.microsoftonline.com/{authority_tenant}",
                 scopes=sorted(f"api://{backend_id}/{scope}" for scope in settings.required_scopes),
             )
         except ValueError:
             result["error"] = (
-                "Check ENTRA_SPA_CLIENT_ID, ENTRA_ALLOWED_CLIENT_IDS, "
-                "AZURE_TENANT_ID, AZURE_CLIENT_ID and the backend API scopes"
+                "Sign-in is temporarily unavailable. Please contact the service administrator."
+                if settings.deployment_mode == "shared"
+                else (
+                    "Check ENTRA_SPA_CLIENT_ID, ENTRA_ALLOWED_CLIENT_IDS, "
+                    "AZURE_TENANT_ID, AZURE_CLIENT_ID and the backend API scopes"
+                )
             )
     return JSONResponse(result, headers={"Cache-Control": "no-store"})
 

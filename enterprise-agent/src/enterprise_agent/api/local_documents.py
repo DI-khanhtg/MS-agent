@@ -27,7 +27,7 @@ async def upload_documents(
     try:
         if (
             not principal.authenticated
-            or settings.app_env != "development"
+            or not settings.local_document_access_enabled
             or "local_read" not in settings.tool_groups
         ):
             raise HTTPException(403, "Authenticated local document imports are disabled")

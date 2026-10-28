@@ -2,23 +2,30 @@
 
 import json
 import logging
+import re
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from typing import Annotated
 from uuid import uuid4
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
 from enterprise_agent.agent.runtime import (
     AgentConfigurationError,
     AgentEgressBlocked,
+    AgentEmptyResponseError,
     AgentRequestTimeout,
     AgentRuntime,
     AgentUpstreamError,
 )
 from enterprise_agent.api.auth import PrincipalDependency
 from enterprise_agent.api.schemas import ChatRequest, ChatResponse
+from enterprise_agent.artifacts.receipts import missing_artifact_links
 from enterprise_agent.artifacts.renderers import ArtifactRenderingError
+from enterprise_agent.artifacts.store import ArtifactNotFoundError
+from enterprise_agent.hosting import chat_slot, check_chat_rate
 from enterprise_agent.security.identity import (
     RequestContext,
     reset_request_context,
@@ -26,10 +33,25 @@ from enterprise_agent.security.identity import (
 )
 from enterprise_agent.telemetry.operations import identity_hash
 from enterprise_agent.tools.local.documents import LocalDocumentError
-from enterprise_agent.tools.recording import get_stream_result
+from enterprise_agent.tools.recording import get_completed_artifacts, get_stream_result
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["chat"])
+EMPTY_RESPONSE_DETAIL = (
+    "Agent đã kết thúc nhưng không trả về nội dung. "
+    "Yêu cầu có thể chưa hoàn tất; hãy kiểm tra mục tài liệu trước khi thử lại."
+)
+
+
+class ClosingStreamingResponse(StreamingResponse):
+    async def stream_response(self, send) -> None:
+        try:
+            await super().stream_response(send)
+        finally:
+            # Close in the task that advanced the iterator: runtime ContextVars belong
+            # to that task. Shield cleanup from Starlette's disconnect cancellation.
+            with anyio.CancelScope(shield=True):
+                await self.body_iterator.aclose()
 
 
 def get_runtime(request: Request) -> AgentRuntime:
@@ -75,17 +97,33 @@ async def chat(
     runtime: RuntimeDependency,
     principal: PrincipalDependency,
 ) -> ChatResponse:
+    await check_chat_rate(request)
+    async with chat_slot(request, principal.isolation_key) as admitted:
+        if not admitted:
+            raise HTTPException(
+                503,
+                "Too many active chat requests. Wait for a turn to finish.",
+                headers={"Retry-After": "1"},
+            )
+        return await _complete_chat(payload, request, runtime, principal)
+
+
+async def _complete_chat(payload, request, runtime, principal) -> ChatResponse:
     session_id = payload.session_id or str(uuid4())
     try:
         result = await runtime.chat(
             _runtime_message(payload, request, principal), session_id, RequestContext(principal)
         )
+        if not result.text.strip():
+            raise AgentEmptyResponseError("The runtime returned no answer")
     except AgentConfigurationError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     except AgentRequestTimeout as exc:
         raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT, detail=str(exc)) from exc
     except AgentEgressBlocked as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
+    except AgentEmptyResponseError as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail=EMPTY_RESPONSE_DETAIL) from exc
     except AgentUpstreamError as exc:
         logger.error("Upstream model request failed", extra={"session_id": session_id})
         raise HTTPException(
@@ -117,6 +155,7 @@ async def stream_chat(
     runtime: RuntimeDependency,
     principal: PrincipalDependency,
 ) -> StreamingResponse:
+    await check_chat_rate(request)
     session_id = payload.session_id or str(uuid4())
     message = _runtime_message(payload, request, principal)
 
@@ -124,13 +163,21 @@ async def stream_chat(
         parts = []
         yield _sse("metadata", {"session_id": session_id})
         try:
-            async for text in runtime.stream_chat(
-                message,
-                session_id,
-                RequestContext(principal),
-            ):
-                parts.append(text)
-                yield _sse("delta", {"text": text})
+            try:
+                async with aclosing(
+                    runtime.stream_chat(message, session_id, RequestContext(principal))
+                ) as updates:
+                    async for text in updates:
+                        parts.append(text)
+                        yield _sse("delta", {"text": text})
+            except Exception:
+                # A completed write remains usable if the provider subsequently fails.
+                links = missing_artifact_links("".join(parts))
+                if links:
+                    yield _sse("delta", {"text": links})
+                raise
+            if not "".join(parts).strip():
+                raise AgentEmptyResponseError("The runtime returned no answer")
             details = get_stream_result()
             await _save_turn(
                 request,
@@ -148,6 +195,8 @@ async def stream_chat(
             yield _sse("error", {"code": "timeout", "detail": "The model request timed out."})
         except AgentEgressBlocked as exc:
             yield _sse("error", {"code": "egress_blocked", "detail": str(exc)})
+        except AgentEmptyResponseError:
+            yield _sse("error", {"code": "empty_response", "detail": EMPTY_RESPONSE_DETAIL})
         except AgentUpstreamError:
             logger.error("Upstream model stream failed", extra={"session_id": session_id})
             yield _sse(
@@ -158,8 +207,23 @@ async def stream_chat(
         except (LocalDocumentError, ValueError, ArtifactRenderingError) as exc:
             yield _sse("error", {"code": "invalid_source", "detail": str(exc)})
 
-    return StreamingResponse(
-        events(),
+    async def admitted_events() -> AsyncIterator[str]:
+        async with chat_slot(request, principal.isolation_key) as admitted:
+            if not admitted:
+                yield _sse(
+                    "error",
+                    {
+                        "code": "server_busy",
+                        "detail": "Too many active chat requests. Wait for a turn to finish.",
+                    },
+                )
+                return
+            async with aclosing(events()) as stream:
+                async for event in stream:
+                    yield event
+
+    return ClosingStreamingResponse(
+        admitted_events(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -180,7 +244,7 @@ async def _save_turn(request, principal, session_id, message, answer, tools, usa
         session_id,
         principal,
         str(safe(message)),
-        str(safe(answer)),
+        await _safe_answer(request, principal, answer),
         safe(tools) if isinstance(safe(tools), list) else [],
         usage,
     )
@@ -196,3 +260,38 @@ async def _save_turn(request, principal, session_id, message, answer, tools, usa
         output_tokens=usage.get("output_token_count", 0),
         status="ok",
     )
+
+
+async def _safe_answer(request, principal, answer: str) -> str:
+    """Keep verified owned download URLs intact while masking ordinary answer content."""
+    gate = request.app.state.egress
+    original = gate.evaluate(answer)
+    if not original.allowed:
+        return "[Blocked by egress policy]"
+    protected = answer
+    replacements = {}
+    verified_urls = {record["download_url"] for record in get_completed_artifacts()}
+    pattern = r"/api/artifacts/([0-9a-fA-F-]{36})/download"
+    for match in list(re.finditer(pattern, answer))[:50]:
+        url = match.group(0)
+        if url in replacements.values():
+            continue
+        if url not in verified_urls:
+            try:
+                await anyio.to_thread.run_sync(
+                    request.app.state.artifact_service.store.get, match.group(1), principal
+                )
+            except (ArtifactNotFoundError, ValueError, OSError, RuntimeError):
+                continue
+        placeholder = "ARTIFACTLINK" + uuid4().hex.translate(
+            str.maketrans("0123456789", "abcdefghij")
+        )
+        replacements[placeholder] = url
+        protected = protected.replace(url, placeholder)
+    decision = gate.evaluate(protected)
+    if not decision.allowed:
+        return "[Blocked by egress policy]"
+    text = str(decision.payload)
+    for placeholder, url in replacements.items():
+        text = text.replace(placeholder, url)
+    return text
