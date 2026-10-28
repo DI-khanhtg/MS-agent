@@ -83,13 +83,27 @@ async def _run_script(
     enabled_tool_groups: str = "mock_read",
     context: RequestContext | None = None,
     message: str = "scripted test",
+    stream: bool = False,
 ) -> tuple[AgentResult, list[dict[str, Any]]]:
     requests: list[dict[str, Any]] = []
 
     async def handler(request: httpx2.Request) -> httpx2.Response:
         requests.append(json.loads(request.content))
         output = outputs[len(requests) - 1]
-        return httpx2.Response(200, json=_response(output, len(requests)))
+        response = _response(output, len(requests))
+        if stream:
+            choice = response["choices"][0]
+            delta = choice.pop("message")
+            for index, call in enumerate(delta["tool_calls"]):
+                call["index"] = index
+            choice["delta"] = delta
+            response["object"] = "chat.completion.chunk"
+            return httpx2.Response(
+                200,
+                text=f"data: {json.dumps(response)}\n\ndata: [DONE]\n\n",
+                headers={"content-type": "text/event-stream"},
+            )
+        return httpx2.Response(200, json=response)
 
     http_client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler))
     openai_client = AsyncOpenAI(
@@ -112,10 +126,65 @@ async def _run_script(
     )
     runtime = MicrosoftAgentRuntime(settings, agent=agent)
     try:
-        result = await runtime.chat(message, "scripted-session", context)
+        if stream:
+            text = "".join(
+                [part async for part in runtime.stream_chat(message, "scripted-session", context)]
+            )
+            details = get_stream_result()
+            result = AgentResult(
+                text=text, tool_calls=details["tool_calls"], usage=details["usage"]
+            )
+        else:
+            result = await runtime.chat(message, "scripted-session", context)
     finally:
         await openai_client.close()
     return result, requests
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_missing_section_heading_creates_word_without_repeating_the_failed_call(
+    tmp_path, stream
+):
+    from docx import Document
+
+    from enterprise_agent.api.app import create_app
+    from enterprise_agent.artifacts.tools import ArtifactTools
+
+    settings = Settings(
+        _env_file=None,
+        runtime_mode="demo",
+        artifact_storage_path=tmp_path / "artifacts",
+        audit_log_path=tmp_path / "audit.jsonl",
+    )
+    service = create_app(settings=settings).state.artifact_service
+    spec = {
+        "artifact_type": "docx",
+        "title": "Verified report",
+        "language": "vi",
+        "sections": [
+            *[{"heading": f"Topic {i}", "body": "Verified content"} for i in range(1, 7)],
+            {"body": "Final verified conclusion"},
+        ],
+    }
+    result, requests = await _run_script(
+        [
+            [_function_call("create_artifact", {"spec": spec}, 1)],
+            [_message("The report is ready.", 2)],
+        ],
+        registry=create_default_registry(artifact_tools=ArtifactTools(service)),
+        enabled_tool_groups="artifact_generation",
+        stream=stream,
+    )
+    assert len(requests) == 2
+    assert [call["name"] for call in result.tool_calls] == ["create_artifact"]
+    records = service.store.list(Principal.anonymous())
+    assert len(records) == 1
+    assert records[0].download_url in result.text
+    _, path = service.store.get(records[0].artifact_id, Principal.anonymous())
+    paragraphs = [paragraph.text for paragraph in Document(path).paragraphs]
+    assert "Mục 7" in paragraphs
+    assert "Final verified conclusion" in paragraphs
 
 
 @pytest.mark.asyncio

@@ -82,6 +82,34 @@ class ArtifactSpec(BaseModel):
     sources: list[ArtifactSource] = Field(default_factory=list, max_length=50)
     metadata: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
 
+    @model_validator(mode="before")
+    @classmethod
+    def fill_missing_section_headings(cls, value: Any) -> Any:
+        """Repair presentation metadata without changing or inventing section content."""
+        if not isinstance(value, dict) or not isinstance(value.get("sections"), list):
+            return value
+        language = value.get("language", "vi")
+        prefix = (
+            "Mục" if isinstance(language, str) and language.lower().startswith("vi") else "Section"
+        )
+        sections = []
+        changed = False
+        for index, section in enumerate(value["sections"], 1):
+            if isinstance(section, dict):
+                heading = section.get("heading")
+                missing = heading is None or (isinstance(heading, str) and not heading.strip())
+                body = section.get("body")
+                bullets = section.get("bullets")
+                has_content = (isinstance(body, str) and bool(body.strip())) or (
+                    isinstance(bullets, list)
+                    and any(isinstance(item, str) and item.strip() for item in bullets)
+                )
+                if missing and has_content:
+                    section = {**section, "heading": f"{prefix} {index}"}
+                    changed = True
+            sections.append(section)
+        return {**value, "sections": sections} if changed else value
+
     @field_validator("title", "subtitle")
     @classmethod
     def strip_optional_text(cls, value: str | None) -> str | None:
