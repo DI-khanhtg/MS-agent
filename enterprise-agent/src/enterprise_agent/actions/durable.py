@@ -11,6 +11,7 @@ from enterprise_agent.actions.store import (
     _owner_key,
 )
 from enterprise_agent.storage.database import Database, StorageConflict
+from enterprise_agent.storage.locking import run_local
 
 
 class DurableApprovalStore(InMemoryApprovalStore):
@@ -22,20 +23,22 @@ class DurableApprovalStore(InMemoryApprovalStore):
     async def create(self, principal, action_type, payload, summary):
         async with self._durable_lock:
             record = await super().create(principal, action_type, payload, summary)
-            await asyncio.to_thread(
-                self.database.put,
-                "actions",
-                record.action_id,
-                principal.isolation_key,
-                record.model_dump(mode="json"),
-                0,
-            )
-            self._items.pop(record.action_id, None)
-            return record
+            try:
+                await run_local(
+                    self.database.put,
+                    "actions",
+                    record.action_id,
+                    principal.isolation_key,
+                    record.model_dump(mode="json"),
+                    0,
+                )
+                return record
+            finally:
+                self._items.pop(record.action_id, None)
 
     async def _apply(self, method, action_id, principal, *args, **kwargs):
         async with self._durable_lock:
-            saved = await asyncio.to_thread(
+            saved = await run_local(
                 self.database.get, "actions", action_id, principal.isolation_key
             )
             if not saved:
@@ -48,7 +51,7 @@ class DurableApprovalStore(InMemoryApprovalStore):
                 record = await getattr(super(), method)(action_id, principal, *args, **kwargs)
                 updated = record.model_dump(mode="json")
                 if updated != payload:
-                    await asyncio.to_thread(
+                    await run_local(
                         self.database.put,
                         "actions",
                         action_id,
@@ -66,7 +69,7 @@ class DurableApprovalStore(InMemoryApprovalStore):
         return await self._apply("get", action_id, principal)
 
     async def list(self, principal):
-        items = await asyncio.to_thread(self.database.list, "actions", principal.isolation_key)
+        items = await run_local(self.database.list, "actions", principal.isolation_key)
         return [await self.get(item["action_id"], principal) for item in items]
 
     async def request_approval(self, action_id, principal):

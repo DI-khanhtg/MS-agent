@@ -937,8 +937,9 @@ async function importDocuments(selected, folderSelection = false) {
         return !path.split("/").some(part => part.startsWith("."))
             && supported.has("." + file.name.split(".").pop().toLowerCase());
     });
-    if (!files.length) return status("Không có tệp hỗ trợ. Chọn PDF, DOCX, PPTX, XLSX, TXT, MD, CSV hoặc JSON.", true);
-    if (files.some(file => file.size > 2_000_000)) return status("Mỗi tệp nhập vào cần nhỏ hơn hoặc bằng 2 MB.", true);
+    if (!files.length) return status("No supported files. Enabled formats: " + [...supported].join(", "), true);
+    const uploadLimit = config.document_upload_max_bytes || 2_000_000;
+    if (files.some(file => file.size > uploadLimit)) return status("Each imported file must be at most " + uploadLimit + " bytes.", true);
     const prefix = crypto.randomUUID();
     busy = true;
     $("choose-folder").disabled = true;

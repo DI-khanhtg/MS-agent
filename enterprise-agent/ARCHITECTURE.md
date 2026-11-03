@@ -196,6 +196,29 @@ flowchart TB
     EXT --> WIN["che PII toàn văn bản,<br/>cắt cửa sổ, egress"]
 ```
 
+### F5: advanced document extraction boundary
+
+`tools/document_reader.py` remains the shared local/Work IQ extraction entrypoint. Format
+routing and limits live in `tools/document_formats.py`; `tools/document_validation.py`
+checks actual containers/types, archive expansion, macros and encoding-aware XML safety.
+The existing DOCX/PPTX/XLSX/PDF parsers are reused without changing model/provider tooling.
+
+`tools/document_sandbox.py` creates a disposable worker, inspects its Docker configuration,
+then verifies kernel cgroup/network/capability attestation before transmitting source bytes.
+`tools/document_worker.py` owns the private tmpfs job and bounded protocol.
+`tools/document_conversion.py` uses headless LibreOffice/UNO with macros/link updates disabled;
+`tools/document_email.py` uses stdlib email/extract-msg and inert HTML-to-text normalization.
+No document-bearing host mounts or host converter fallback are used. Cleanup must succeed
+before a result is returned. `Dockerfile.documents` is separate from the backend image.
+
+Local and Work IQ readers classify full text plus extraction metadata, redact before slicing,
+and return owner-scoped handles and `trust: untrusted_document_data` through the existing
+egress gate. Existing native formats keep their default compatibility path; all new formats
+require the sandbox, and enabling it defaults to sandboxing native formats as well. Image,
+format and resource policy are backend configuration, never client selectors. See the
+[F5 matrix/operations guide](docs/advanced-documents.md) for the supported boundary and
+the distinction between offline parser tests and opt-in real-container verification.
+
 ### 4.2 Hành động có kiểm soát (ghi)
 
 ```mermaid
@@ -267,6 +290,26 @@ flowchart LR
 | Tài liệu cục bộ | `data/documents/` | Chỉ dùng với nhóm `local_read`. |
 
 ## 7. Quan sát và vận hành
+
+### F3: local data lifecycle
+
+`storage/migrations.py` versions SQLAlchemy Core schema upgrades, including nullable indexed
+`agent_records.expires_at` and `agent_cleanup_jobs`. `storage/lifecycle.py` coordinates
+owner-scoped requests, explicit erasure and approved expiry cleanup. `api/data.py` exposes
+authenticated `DELETE /api/me/data` without client-supplied identity selectors. Owner identity
+is the verified tenant/object pair; framework sessions now persist with the same owner scope
+as conversations/actions. Artifact and upload paths are registered before file creation.
+
+FastAPI lifespan starts cleanup and retries committed erasure intent after restart. PostgreSQL
+advisory locks or SQLite host-volume OS locks serialize cleanup against the owner's complete
+response, including streams/downloads. Durable caches clear at response completion; delegated
+MSAL tokens are request-only. Memory mode enforces one active application process. Audit uses
+cross-process rotation, configurable approved retention and pseudonymous subject erasure.
+
+No B5 period is assumed: TTL enforcement defaults off. At-rest encryption belongs to managed
+PostgreSQL/storage or the encrypted SQLite host volume. Online deletion does not erase old
+backup/snapshot copies or Microsoft source data. See [operations](docs/data-lifecycle.md) for
+deployment prerequisites, consistency/retry semantics and restore procedures.
 
 - `GET /health`: trạng thái server và cấu hình (không xác nhận key hay consent thực tế).
 - `GET /api/config`, `GET /api/metrics`: cấu hình công khai an toàn và số liệu vận hành.

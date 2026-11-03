@@ -13,12 +13,14 @@ from enterprise_agent.agent.budget import (
     reserve_source_call,
     resolve_source_reference,
 )
+from enterprise_agent.config import Settings
 from enterprise_agent.security.egress import EgressGate
 from enterprise_agent.security.identity import get_request_context
 from enterprise_agent.security.redaction import SanitizationStats, sanitize_copy
+from enterprise_agent.storage.locking import run_local
 from enterprise_agent.telemetry.operations import audit_event, identity_hash
+from enterprise_agent.tools.document_formats import enabled_formats
 from enterprise_agent.tools.document_reader import (
-    SUPPORTED,
     DocumentExtractionError,
     ExtractedDocument,
     extract_document,
@@ -70,10 +72,16 @@ class WorkIQReadTools:
         egress_gate: EgressGate,
         *,
         graph_token_provider: WorkIQTokenProvider | None = None,
+        settings: Settings | None = None,
     ) -> None:
         self.client = client
         self.token_provider = token_provider
         self.egress_gate = egress_gate
+        client_settings = getattr(client, "settings", None)
+        self.settings = settings or (
+            client_settings if isinstance(client_settings, Settings) else Settings(_env_file=None)
+        )
+        self.supported_formats = enabled_formats(self.settings)
         self.link_resolver = SharedLinkResolver(
             client, token_provider, egress_gate, f"workiq:{id(self)}"
         )
@@ -98,7 +106,7 @@ class WorkIQReadTools:
         max_chars: int = 3500,
         document_id: str = "",
     ) -> dict:
-        """Read PDF, DOCX, PPTX, XLSX or text from a resolved drive item; follow offsets.
+        """Read enabled Office, PDF, text or email documents; follow sanitized text offsets.
 
         Prefer document_id returned by workiq_search_documents in THIS turn; it resolves
         private paths even when data protection masks numeric IDs or filenames.
@@ -165,10 +173,10 @@ class WorkIQReadTools:
             ):
                 raise _DocumentReadError("invalid_read_window", "Use max_chars from 1 to 14000.")
             suffix = PurePosixPath(filename).suffix.lower()
-            if suffix not in SUPPORTED and not (document_id and not suffix):
+            if suffix not in self.supported_formats and not (document_id and not suffix):
                 raise _DocumentReadError(
                     "unsupported_document_type",
-                    "Use PDF, DOCX, PPTX, XLSX or UTF-8 text; convert legacy Office files first.",
+                    "Use an enabled document format; advanced formats require the sandbox.",
                 )
             if record:
                 record_tool_call("workiq_read_document", {"path": validated, "offset": offset})
@@ -179,11 +187,11 @@ class WorkIQReadTools:
                         lambda: self._document_filename(validated.removesuffix("/content")),
                     )
                     suffix = PurePosixPath(filename).suffix.lower()
-                    if suffix not in SUPPORTED:
+                    if suffix not in self.supported_formats:
                         raise _DocumentReadError(
                             "unsupported_document_type",
                             "The source filename has an unsupported extension; "
-                            "convert legacy Office files first.",
+                            "check the enabled document formats and sandbox configuration.",
                         )
                 document = await cached_source_read(
                     (id(self), "document", validated, suffix, large_file),
@@ -242,8 +250,14 @@ class WorkIQReadTools:
             content = await self.document_downloader.download(
                 validated.removesuffix("/content"), source_size
             )
-            return await asyncio.to_thread(
-                extract_document, content, suffix, max_source_bytes=MAX_CLOUD_BYTES
+            return await run_local(
+                extract_document,
+                content,
+                suffix,
+                max_source_bytes=min(
+                    MAX_CLOUD_BYTES, self.settings.document_cloud_max_source_bytes
+                ),
+                settings=self.settings,
             )
         context = get_request_context()
         token = await self.token_provider.get_token(context.principal)
@@ -291,7 +305,7 @@ class WorkIQReadTools:
                 "invalid_document_response",
                 "Work IQ returned incomplete document content; retry the download.",
             )
-        return await asyncio.to_thread(extract_document, content, suffix)
+        return await run_local(extract_document, content, suffix, settings=self.settings)
 
     async def _document_filename(self, path: str) -> str:
         context = get_request_context()
@@ -332,9 +346,15 @@ class WorkIQReadTools:
         principal = get_request_context().principal
         # Classify the complete original before masking or limiting it. Sanitize before
         # splitting so PII across a chunk boundary cannot leak or expand past that chunk.
-        original = self.egress_gate.evaluate(document.text)
+        original = self.egress_gate.evaluate(
+            {"text": document.text, "extraction": document.metadata}
+        )
         if not original.allowed and original.reason == "prohibited_classification":
-            self.egress_gate.enforce(document.text, source="workiq:document", principal=principal)
+            self.egress_gate.enforce(
+                {"text": document.text, "extraction": document.metadata},
+                source="workiq:document",
+                principal=principal,
+            )
         stats = SanitizationStats()
         text = sanitize_copy(
             document.text,
@@ -490,7 +510,7 @@ class WorkIQReadTools:
             else:
                 suffix = PurePosixPath(entry.name).suffix.lower()
                 item["size_bytes"] = entry.size_bytes
-                item["readable"] = suffix in SUPPORTED and (
+                item["readable"] = suffix in self.supported_formats and (
                     entry.size_bytes is None or entry.size_bytes <= MAX_CLOUD_BYTES
                 )
                 value = ResolvedSharedFile(entry.path, entry.name, "", None, entry.size_bytes)

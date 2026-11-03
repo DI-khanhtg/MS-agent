@@ -218,8 +218,8 @@ def test_xlsx_reports_empty_sheets_while_retaining_zero_and_false_values():
 
 
 @pytest.mark.parametrize("suffix", [".doc", ".ppt", ".xls", ".exe"])
-def test_unsupported_formats_are_rejected_without_decoding_binary(suffix):
-    with pytest.raises(reader().DocumentExtractionError, match="[Uu]nsupported|[Cc]onvert"):
+def test_unsupported_or_mismatched_formats_are_rejected_without_decoding_binary(suffix):
+    with pytest.raises(reader().DocumentExtractionError, match="[Uu]nsupported|match"):
         reader().extract_document(b"\xff\x00private", suffix)
 
 

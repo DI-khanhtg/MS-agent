@@ -501,9 +501,9 @@ async def test_document_search_and_read_are_cached_only_within_the_current_turn(
     extraction_calls = []
     original = module.extract_document
 
-    def extract(*args):
+    def extract(*args, **kwargs):
         extraction_calls.append(True)
-        return original(*args)
+        return original(*args, **kwargs)
 
     monkeypatch.setattr(module, "extract_document", extract)
     text = "a" * 20000

@@ -40,9 +40,45 @@ class Settings(BaseSettings):
     storage_backend: Literal["memory", "database"] = "memory"
     database_url: SecretStr = SecretStr("TO_BE_FILLED_LATER")
     database_path: Path = PROJECT_ROOT / "data" / "agent.db"
+    # B5 must be approved before automatic policy enforcement can be enabled.
+    retention_enabled: bool = False
+    retention_policy_approval: str = ""
+    conversation_ttl_seconds: int | None = Field(default=None, gt=0)
+    session_ttl_seconds: int | None = Field(default=None, gt=0)
+    artifact_ttl_seconds: int | None = Field(default=None, gt=0)
+    upload_ttl_seconds: int | None = Field(default=None, gt=0)
+    cleanup_interval_seconds: float = Field(default=60, ge=1, le=86400)
+    audit_max_bytes: int = Field(default=10_000_000, ge=1024)
+    audit_retention_seconds: int | None = Field(default=None, gt=0)
     local_documents_root: Path = PROJECT_ROOT / "data" / "documents"
     local_max_file_bytes: int = Field(default=5_000_000, ge=1024, le=50_000_000)
     local_max_files: int = Field(default=200, ge=1, le=1000)
+    document_enabled_formats: str = (
+        ".txt,.md,.csv,.json,.pdf,.docx,.pptx,.xlsx,.doc,.ppt,.xls,.rtf,.odt,.msg,.eml"
+    )
+    document_sandbox_enabled: bool = False
+    document_sandbox_runtime: str = "docker"
+    document_sandbox_image: str = ""
+    document_sandbox_all_formats: bool = True
+    document_conversion_enabled: bool = True
+    document_timeout_seconds: int = Field(default=45, ge=5, le=180)
+    document_cpu_seconds: int = Field(default=30, ge=1, le=120)
+    document_cpus: float = Field(default=1.0, ge=0.1, le=4)
+    document_memory_mb: int = Field(default=512, ge=128, le=2048)
+    document_tmpfs_mb: int = Field(default=128, ge=32, le=512)
+    document_pids_limit: int = Field(default=64, ge=16, le=256)
+    document_max_concurrent_jobs: int = Field(default=2, ge=1, le=16)
+    document_max_source_bytes: int = Field(default=5_000_000, ge=1024, le=20_000_000)
+    document_cloud_max_source_bytes: int = Field(default=20_000_000, ge=1024, le=20_000_000)
+    document_upload_max_bytes: int = Field(default=2_000_000, ge=1024, le=2_000_000)
+    document_max_expanded_bytes: int = Field(default=50_000_000, ge=1024, le=100_000_000)
+    document_max_archive_entries: int = Field(default=2000, ge=10, le=10000)
+    document_max_compression_ratio: int = Field(default=200, ge=10, le=1000)
+    document_max_depth: int = Field(default=32, ge=4, le=64)
+    document_max_units: int = Field(default=200, ge=1, le=2000)
+    document_max_cells: int = Field(default=100_000, ge=100, le=1_000_000)
+    document_max_mail_parts: int = Field(default=256, ge=1, le=1000)
+    document_max_chars: int = Field(default=100_000, ge=1000, le=1_000_000)
     max_tool_calls: int = Field(default=24, ge=1, le=100)
     max_history_messages: int = Field(default=40, ge=4, le=200)
     rate_limit_per_minute: int = Field(default=60, ge=1, le=10000)
@@ -125,6 +161,20 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_turn_budget(self) -> "Settings":
+        import re
+
+        from enterprise_agent.tools.document_formats import SUPPORTED
+
+        if not self.document_formats or not self.document_formats <= SUPPORTED:
+            raise ValueError("DOCUMENT_ENABLED_FORMATS contains unsupported formats")
+        if self.document_sandbox_enabled and not re.fullmatch(
+            r"(?:[a-zA-Z0-9._:/-]+@)?sha256:[a-f0-9]{64}", self.document_sandbox_image
+        ):
+            raise ValueError("Document sandbox requires an immutable image digest or image ID")
+        if self.retention_enabled and not self.retention_policy_approval.strip():
+            raise ValueError("Retention requires a B5 policy approval reference")
+        if self.audit_retention_seconds is not None and not self.retention_policy_approval.strip():
+            raise ValueError("Audit retention requires a B5 policy approval reference")
         if self.agent_synthesis_reserve_seconds >= self.agent_turn_timeout_seconds:
             raise ValueError("Synthesis reserve must be smaller than the agent turn timeout")
         return self
@@ -308,6 +358,14 @@ class Settings(BaseSettings):
         if self.subagent_is_configured and self.runtime_mode == "gemini":
             groups.add("subagents")
         return groups
+
+    @property
+    def document_formats(self) -> set[str]:
+        return {
+            part.strip().lower()
+            for part in self.document_enabled_formats.split(",")
+            if part.strip()
+        }
 
     @property
     def entra_is_configured(self) -> bool:

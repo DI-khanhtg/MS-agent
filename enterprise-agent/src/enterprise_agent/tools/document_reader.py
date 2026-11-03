@@ -2,7 +2,6 @@
 
 import io
 from dataclasses import dataclass
-from zipfile import ZipFile
 
 from docx import Document
 from docx.table import Table
@@ -12,18 +11,20 @@ from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pypdf import PdfReader
 
-SUPPORTED = {".txt", ".md", ".csv", ".json", ".docx", ".pptx", ".pdf", ".xlsx"}
+from enterprise_agent.tools.document_formats import (
+    ADVANCED_FORMATS,
+    SUPPORTED,
+    DocumentExtractionError,
+    DocumentLimits,
+)
+from enterprise_agent.tools.document_validation import validate_content
+
 _OFFICE = {".docx", ".pptx", ".xlsx"}
 _VISUAL_WARNING = (
     "Text only: images, charts and other visual content, if present, are not extracted."
 )
 _MAX_SOURCE_BYTES = 5_000_000
-_MAX_EXPANDED_BYTES = 50_000_000
 _MAX_DEPTH = 32
-
-
-class DocumentExtractionError(ValueError):
-    """A document cannot be safely extracted within the supported limits."""
 
 
 @dataclass(frozen=True)
@@ -32,16 +33,25 @@ class ExtractedDocument:
     format: str
     unit_count: int | None
     warnings: tuple[str, ...]
+    headers: dict[str, str] | None = None
+    converted_to: str | None = None
 
     @property
     def metadata(self) -> dict:
-        return {
+        result = {
             "format": self.format,
             "method": "text_extraction",
             "unit_count": self.unit_count,
             "coverage": "text_only",
             "warnings": list(self.warnings),
         }
+        if self.headers is not None:
+            result["headers"] = self.headers
+        if self.converted_to:
+            result.update(method="libreoffice_conversion", converted_to=self.converted_to)
+        if self.format in {suffix[1:] for suffix in ADVANCED_FORMATS}:
+            result["trust"] = "untrusted_document_data"
+        return result
 
 
 class _Text:
@@ -71,19 +81,8 @@ class _Text:
         return "".join(self.parts)
 
 
-def _preflight_office(content: bytes) -> None:
-    with ZipFile(io.BytesIO(content)) as package:
-        expanded = 0
-        for item in package.infolist():
-            if item.flag_bits & 1:
-                raise DocumentExtractionError("Encrypted Office documents are unsupported")
-            expanded += item.file_size
-            if expanded > _MAX_EXPANDED_BYTES:
-                raise DocumentExtractionError("Expanded Office document exceeds the size limit")
-
-
-def _docx_blocks(container, text: _Text, depth: int = 0) -> None:
-    if depth > _MAX_DEPTH:
+def _docx_blocks(container, text: _Text, depth: int = 0, max_depth=_MAX_DEPTH) -> None:
+    if depth > max_depth:
         raise DocumentExtractionError("Document nesting exceeds the supported depth; simplify it")
     for block in container.iter_inner_content():
         if isinstance(block, Paragraph):
@@ -98,14 +97,14 @@ def _docx_blocks(container, text: _Text, depth: int = 0) -> None:
                         continue
                     seen.add(cell._tc)
                     cell_text = _Text(text.limit - text.size)
-                    _docx_blocks(cell, cell_text, depth + 1)
+                    _docx_blocks(cell, cell_text, depth + 1, max_depth)
                     if cells.parts:
                         cells.write(" | ")
                     cells.write(cell_text.result())
                 text.line(cells.result())
 
 
-def _extract_docx(content: bytes, text: _Text) -> None:
+def _extract_docx(content: bytes, text: _Text, max_depth=_MAX_DEPTH) -> None:
     document = Document(io.BytesIO(content))
     seen = set()
     # Headers and footers live in separate parts; inherited parts are emitted once.
@@ -113,21 +112,21 @@ def _extract_docx(content: bytes, text: _Text) -> None:
         for header in (section.header, section.first_page_header, section.even_page_header):
             if header._has_definition and header.part.partname not in seen:
                 seen.add(header.part.partname)
-                _docx_blocks(header, text)
-    _docx_blocks(document, text)
+                _docx_blocks(header, text, max_depth=max_depth)
+    _docx_blocks(document, text, max_depth=max_depth)
     for section in document.sections:
         for footer in (section.footer, section.first_page_footer, section.even_page_footer):
             if footer._has_definition and footer.part.partname not in seen:
                 seen.add(footer.part.partname)
-                _docx_blocks(footer, text)
+                _docx_blocks(footer, text, max_depth=max_depth)
 
 
-def _pptx_shapes(shapes, text: _Text, depth: int = 0) -> None:
-    if depth > _MAX_DEPTH:
+def _pptx_shapes(shapes, text: _Text, depth: int = 0, max_depth=_MAX_DEPTH) -> None:
+    if depth > max_depth:
         raise DocumentExtractionError("Slide nesting exceeds the supported depth; simplify it")
     for shape in shapes:
         if shape.shape_type == MSO_SHAPE_TYPE.GROUP:
-            _pptx_shapes(shape.shapes, text, depth + 1)
+            _pptx_shapes(shape.shapes, text, depth + 1, max_depth)
         elif shape.has_table:
             for row in shape.table.rows:
                 row_text = _Text(text.limit - text.size)
@@ -146,16 +145,18 @@ def _pptx_shapes(shapes, text: _Text, depth: int = 0) -> None:
                     text.line(paragraph.text)
 
 
-def _extract_pptx(content: bytes, text: _Text, warnings: list[str]) -> int:
+def _extract_pptx(
+    content: bytes, text: _Text, warnings: list[str], max_units=200, max_depth=_MAX_DEPTH
+) -> int:
     deck = Presentation(io.BytesIO(content))
-    if len(deck.slides) > 200:
+    if len(deck.slides) > max_units:
         raise DocumentExtractionError(
-            "Presentations over 200 slides are unsupported; split the file"
+            f"Presentations over {max_units} slides are unsupported; split the file"
         )
     empty = 0
     for index, slide in enumerate(deck.slides, 1):
         slide_text = _Text(text.limit - text.size)
-        _pptx_shapes(slide.shapes, slide_text)
+        _pptx_shapes(slide.shapes, slide_text, max_depth=max_depth)
         if slide.has_notes_slide:
             notes = slide.notes_slide.notes_text_frame
             if notes is not None and notes.text.strip():
@@ -176,13 +177,15 @@ def _extract_pptx(content: bytes, text: _Text, warnings: list[str]) -> int:
     return len(deck.slides)
 
 
-def _extract_pdf(content: bytes, text: _Text, warnings: list[str]) -> int:
+def _extract_pdf(content: bytes, text: _Text, warnings: list[str], max_units=200) -> int:
     document = PdfReader(io.BytesIO(content))
     if document.is_encrypted:
         raise DocumentExtractionError("Encrypted PDFs are unsupported; provide an unencrypted copy")
     count = len(document.pages)
-    if count > 200:
-        raise DocumentExtractionError("PDFs over 200 pages are unsupported; split the file")
+    if count > max_units:
+        raise DocumentExtractionError(
+            f"PDFs over {max_units} pages are unsupported; split the file"
+        )
     empty = 0
     for index, page in enumerate(document.pages, 1):
         page_text = (page.extract_text() or "").strip()
@@ -199,15 +202,21 @@ def _extract_pdf(content: bytes, text: _Text, warnings: list[str]) -> int:
     return count
 
 
-def _extract_xlsx(content: bytes, text: _Text, warnings: list[str]) -> int:
+def _extract_xlsx(
+    content: bytes, text: _Text, warnings: list[str], max_cells=100_000, max_units=200
+) -> int:
     warnings.append(
         "Only cached formula values are read; unavailable cached values are omitted. "
         "Formulas are not evaluated."
     )
     workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
     try:
+        if len(workbook.worksheets) > max_units:
+            raise DocumentExtractionError("Workbook worksheet count exceeds the configured limit")
         empty = 0
         for sheet in workbook:
+            if (sheet.max_row or 0) * (sheet.max_column or 0) > max_cells:
+                raise DocumentExtractionError("Worksheet cell/text limit exceeded; split the file")
             sheet_text = _Text(text.limit - text.size)
             has_values = False
             for row in sheet.iter_rows(values_only=True):
@@ -240,44 +249,80 @@ def _extract_xlsx(content: bytes, text: _Text, warnings: list[str]) -> int:
 def extract_document(
     content: bytes,
     suffix: str,
-    max_chars: int = 100_000,
+    max_chars: int | None = None,
     *,
-    max_source_bytes: int = _MAX_SOURCE_BYTES,
+    max_source_bytes: int | None = None,
+    settings=None,
+    content_type: str | None = None,
 ) -> ExtractedDocument:
     """Extract selectable text without executing macros or fetching external resources.
 
     Source files default to 5 MB (explicit cloud reads may allow up to 20 MB),
     expanded Office ZIPs at 50 MB, PDF/PPTX at
     200 pages/slides, and text is rejected as soon as the requested limit is exceeded.
-    Legacy binary Office files must be converted before reading.
+    Advanced formats always require a verified sandbox; converted Office output reuses
+    the same native parsers. No unsafe host conversion fallback is provided.
     """
+    max_chars = (
+        max_chars
+        if max_chars is not None
+        else (settings.document_max_chars if settings else 100_000)
+    )
+    max_source_bytes = (
+        max_source_bytes
+        if max_source_bytes is not None
+        else (settings.document_max_source_bytes if settings else _MAX_SOURCE_BYTES)
+    )
     if not isinstance(max_chars, int) or isinstance(max_chars, bool) or max_chars <= 0:
         raise DocumentExtractionError("max_chars must be a positive integer")
     if type(max_source_bytes) is not int or not 0 < max_source_bytes <= 20_000_000:
         raise DocumentExtractionError("max_source_bytes must be from 1 to 20000000")
     suffix = suffix.lower()
-    if suffix in {".doc", ".ppt", ".xls"}:
-        raise DocumentExtractionError("Convert legacy Office files to DOCX, PPTX or XLSX first")
     if suffix not in SUPPORTED:
+        if suffix in {".docm", ".xlsm", ".pptm"}:
+            raise DocumentExtractionError("Macro-enabled document formats are unsupported")
         raise DocumentExtractionError("Unsupported document format")
     if len(content) > max_source_bytes:
         raise DocumentExtractionError(
             "Source document exceeds the configured size limit; split the file"
         )
-    text = _Text(max_chars)
+    if settings and suffix not in settings.document_formats:
+        raise DocumentExtractionError("Document format is disabled by configuration")
+    limits = (
+        DocumentLimits.from_settings(
+            settings, max_source_bytes=max_source_bytes, max_chars=max_chars
+        )
+        if settings
+        else DocumentLimits(
+            max_source_bytes=max_source_bytes,
+            max_chars=max_chars,
+        )
+    )
+    validate_content(content, suffix, limits=limits, content_type=content_type)
+    if suffix in ADVANCED_FORMATS or (
+        settings and settings.document_sandbox_enabled and settings.document_sandbox_all_formats
+    ):
+        from enterprise_agent.tools.document_sandbox import SandboxClient
+
+        return SandboxClient(settings).extract(content, suffix, limits)
+    return extract_native(content, suffix, limits)
+
+
+def extract_native(content: bytes, suffix: str, limits: DocumentLimits) -> ExtractedDocument:
+    """Existing native parsers, also reused by the isolated converter worker."""
+    text = _Text(limits.max_chars)
     warnings: list[str] = []
     count = None
     try:
-        if suffix in _OFFICE:
-            _preflight_office(content)
+        validate_content(content, suffix, limits=limits)
         if suffix == ".docx":
-            _extract_docx(content, text)
+            _extract_docx(content, text, limits.max_depth)
         elif suffix == ".pptx":
-            count = _extract_pptx(content, text, warnings)
+            count = _extract_pptx(content, text, warnings, limits.max_units, limits.max_depth)
         elif suffix == ".pdf":
-            count = _extract_pdf(content, text, warnings)
+            count = _extract_pdf(content, text, warnings, limits.max_units)
         elif suffix == ".xlsx":
-            count = _extract_xlsx(content, text, warnings)
+            count = _extract_xlsx(content, text, warnings, limits.max_cells, limits.max_units)
         else:
             decoded = content.decode("utf-8-sig")
             if any(ord(char) < 32 and char not in "\t\n\r" for char in decoded):

@@ -8,6 +8,7 @@ import msal
 
 from enterprise_agent.config import Settings
 from enterprise_agent.security.identity import Principal
+from enterprise_agent.tools.workiq.auth import RequestOnlyTokenCache
 
 
 class FabricAuthenticationError(RuntimeError):
@@ -43,6 +44,7 @@ class MsalFabricOnBehalfOfTokenProvider:
                     client_id=self.settings.azure_client_id,
                     client_credential=self.settings.azure_client_secret.get_secret_value(),
                     authority=f"https://login.microsoftonline.com/{principal.tenant_id}",
+                    token_cache=RequestOnlyTokenCache(),
                 )
                 self._applications[principal.tenant_id] = application
                 while len(self._applications) > 512:
@@ -62,3 +64,7 @@ class MsalFabricOnBehalfOfTokenProvider:
                 f"Fabric token exchange failed ({error}; correlation_id={correlation_id})"
             )
         return access_token
+
+    def evict_owner(self, owner_hash: str) -> None:
+        # Shared applications retain tenant configuration, never delegated tokens.
+        pass

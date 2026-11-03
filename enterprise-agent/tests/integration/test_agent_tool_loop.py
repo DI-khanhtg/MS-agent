@@ -221,7 +221,9 @@ async def test_real_framework_turn_can_resume_after_database_restart(tmp_path, m
     first = MicrosoftAgentRuntime(settings, database=database)
     try:
         await first.chat("First turn", "resumed")
-        saved = database.get("framework_sessions", "anonymous:anonymous:resumed", "runtime")
+        saved = database.get(
+            "framework_sessions", "anonymous:anonymous:resumed", "anonymous:anonymous"
+        )
         assert saved is not None
         restarted = MicrosoftAgentRuntime(settings, database=database)
         result = await restarted.chat("Continue the prior analysis", "resumed")
