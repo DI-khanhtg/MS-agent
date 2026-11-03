@@ -1,6 +1,5 @@
 """Bounded document reads within a configured root, with source and coverage metadata."""
 
-import asyncio
 import hashlib
 import os
 import re
@@ -11,14 +10,15 @@ from threading import RLock
 
 from enterprise_agent.config import Settings
 from enterprise_agent.security.egress import EgressGate
-from enterprise_agent.security.identity import get_request_context
-from enterprise_agent.tools.document_reader import (
-    SUPPORTED,
-    extract_document,
-    extract_text,
-)
+from enterprise_agent.security.identity import Principal, get_request_context
+from enterprise_agent.security.redaction import SanitizationStats, sanitize_copy
+from enterprise_agent.storage.locking import run_local
+from enterprise_agent.tools.document_formats import enabled_formats
 from enterprise_agent.tools.document_reader import (
     DocumentExtractionError as LocalDocumentError,
+)
+from enterprise_agent.tools.document_reader import (
+    extract_document,
 )
 from enterprise_agent.tools.recording import record_tool_call
 
@@ -40,6 +40,8 @@ def _is_document_link(path: Path) -> bool:
 class LocalDocumentTools:
     def __init__(self, settings: Settings, gate: EgressGate) -> None:
         self.settings, self.gate = settings, gate
+        self.supported_formats = enabled_formats(settings)
+        self.database = None
         self._base_root = settings.local_documents_root.absolute()
         self._import_lock = RLock()
         self._reference_limit = max(25, min(settings.local_max_files * 4, 10_000))
@@ -127,7 +129,7 @@ class LocalDocumentTools:
                 if (
                     name.startswith(".")
                     or _is_document_link(path)
-                    or path.suffix.lower() not in SUPPORTED
+                    or path.suffix.lower() not in self.supported_formats
                 ):
                     skipped += 1
                     continue
@@ -192,17 +194,51 @@ class LocalDocumentTools:
 
     def read(self, path: str, offset: int = 0, limit: int = 3500) -> dict:
         target = self.resolve(path)
-        if not target.is_file() or target.suffix.lower() not in SUPPORTED:
+        if not target.is_file() or target.suffix.lower() not in self.supported_formats:
             raise LocalDocumentError("Unsupported or missing document")
-        if not 0 <= offset <= 100_000 or not 1 <= limit <= 3500:
+        if (
+            type(offset) is not int
+            or not 0 <= offset <= 1_000_000
+            or type(limit) is not int
+            or not 1 <= limit <= 3500
+        ):
             raise LocalDocumentError("Invalid document chunk bounds")
         with target.open("rb") as file:
             content = file.read(self.settings.local_max_file_bytes + 1)
         if len(content) > self.settings.local_max_file_bytes:
             raise LocalDocumentError("File exceeds the configured size limit")
         try:
-            document = extract_document(content, target.suffix.lower())
-            text = document.text
+            document = extract_document(
+                content,
+                target.suffix.lower(),
+                settings=self.settings,
+                max_source_bytes=min(
+                    self.settings.local_max_file_bytes, self.settings.document_max_source_bytes
+                ),
+            )
+            full = {"text": document.text, "extraction": document.metadata}
+            decision = self.gate.evaluate(full)
+            if not decision.allowed and decision.reason == "prohibited_classification":
+                try:
+                    principal = get_request_context().principal
+                except RuntimeError:
+                    principal = Principal.anonymous()
+                self.gate.enforce(full, source="local:document", principal=principal)
+            # Mask the whole document before slicing, including email headers, so
+            # a PII/secret value straddling a text window cannot escape classification.
+            stats = SanitizationStats()
+            safe = sanitize_copy(
+                full,
+                pii_patterns=self.gate.policy.pii_patterns,
+                replacement=self.gate.policy.replacement,
+                max_list_items=self.gate.policy.max_list_items,
+                max_string_chars=1_000_000,
+                max_depth=self.gate.policy.max_depth,
+                stats=stats,
+            )
+            if stats.truncated:
+                raise LocalDocumentError("Redacted document exceeds the read limit; split the file")
+            text = safe["text"]
         except LocalDocumentError:
             raise
         except Exception as exc:
@@ -216,7 +252,8 @@ class LocalDocumentTools:
             "total_chars": len(text),
             "next_offset": offset + limit if offset + limit < len(text) else None,
             "empty": not text.strip(),
-            "extraction": document.metadata,
+            "extraction": safe["extraction"],
+            "offset_basis": "sanitized_text",
             "trust": "untrusted_document_data",
         }
 
@@ -239,11 +276,15 @@ class LocalDocumentTools:
             root = self.root
             targets: list[tuple[Path, bytes]] = []
             names: set[str] = set()
-            for relative, content in files:
+            for item in files:
+                relative, content = item[:2]
+                content_type = item[2] if len(item) == 3 else None
                 target = self.resolve(relative)
-                if not relative or target.suffix.lower() not in SUPPORTED:
+                if not relative or target.suffix.lower() not in self.supported_formats:
                     raise LocalDocumentError("Unsupported document format")
-                if len(content) > min(self.settings.local_max_file_bytes, 2_000_000):
+                if len(content) > min(
+                    self.settings.local_max_file_bytes, self.settings.document_upload_max_bytes
+                ):
                     raise LocalDocumentError("File exceeds the configured import size limit")
                 key = relative.casefold()
                 if key in names or target.exists():
@@ -257,7 +298,12 @@ class LocalDocumentTools:
                     if parent.exists() and not parent.is_dir():
                         raise LocalDocumentError("Import path conflicts with an existing document")
                 try:
-                    extract_text(content, target.suffix.lower())
+                    extract_document(
+                        content,
+                        target.suffix.lower(),
+                        settings=self.settings,
+                        content_type=content_type,
+                    )
                 except LocalDocumentError:
                     raise
                 except Exception as exc:
@@ -279,6 +325,16 @@ class LocalDocumentTools:
             written: list[Path] = []
             try:
                 for target, content in targets:
+                    if self.database:
+                        relative = target.relative_to(self._base_root).as_posix()
+                        saved = self.database.get("uploads", relative, principal.isolation_key)
+                        self.database.put(
+                            "uploads",
+                            relative,
+                            principal.isolation_key,
+                            {"path": relative},
+                            saved[1] if saved else 0,
+                        )
                     # Check each component before creation and again before exclusive open.
                     for directory in (*reversed(target.parent.parents), target.parent):
                         self._reject_links(directory)
@@ -293,7 +349,7 @@ class LocalDocumentTools:
                 raise LocalDocumentError(
                     "Import could not be saved; no files were imported"
                 ) from exc
-            return {"uploaded_files": len(targets), "paths": [path for path, _ in files]}
+            return {"uploaded_files": len(targets), "paths": [item[0] for item in files]}
 
     async def list_local_documents(self, folder: str = "", offset: int = 0) -> dict:
         """Inventory files under the account root; follow pages and read using document_id.
@@ -302,7 +358,7 @@ class LocalDocumentTools:
         """
         record_tool_call("list_local_documents", {"folder": folder, "offset": offset})
         try:
-            result = await asyncio.to_thread(self.manifest, folder, offset)
+            result = await run_local(self.manifest, folder, offset)
         except LocalDocumentError as exc:
             result = {"error": {"code": "local_inventory_failed", "message": str(exc)}}
         except OSError:
@@ -319,7 +375,7 @@ class LocalDocumentTools:
     async def read_local_document(
         self, path: str = "", offset: int = 0, document_id: str = ""
     ) -> dict:
-        """Read PDF/DOCX/PPTX/XLSX/text using document_id from list_local_documents.
+        """Read enabled documents/emails using document_id from list_local_documents.
 
         Prefer document_id; legacy path accepts an unmasked relative path. Provide only
         one of them. Follow next_offset using the same document_id and check warnings.
@@ -342,11 +398,11 @@ class LocalDocumentTools:
                 }
             else:
                 relative = (
-                    await asyncio.to_thread(self._path_for_document_id, document_id)
+                    await run_local(self._path_for_document_id, document_id)
                     if document_id
                     else path
                 )
-                result = await asyncio.to_thread(self.read, relative, offset)
+                result = await run_local(self.read, relative, offset)
         except LocalDocumentError as exc:
             result = {"error": {"code": "local_document_read_failed", "message": str(exc)}}
         except OSError:

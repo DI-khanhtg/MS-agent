@@ -13,6 +13,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from threading import Lock
 from typing import Any
+from uuid import uuid4
+
+from enterprise_agent.storage.locking import file_lock
 
 
 class CircuitOpenError(RuntimeError):
@@ -78,8 +81,13 @@ class RateLimiter:
 
 
 class AuditLog:
-    def __init__(self, path: Path) -> None:
+    def __init__(
+        self, path: Path, *, max_bytes: int = 10_000_000, retention_seconds: int | None = None
+    ) -> None:
         self.path = path
+        self.max_bytes = max_bytes
+        self.retention_seconds = retention_seconds
+        self.clock = time.time
         self._lock = Lock()
         self.totals: dict[str, float] = defaultdict(float)
 
@@ -111,17 +119,67 @@ class AuditLog:
             "finish_reason",
         }
         safe = {k: v for k, v in metadata.items() if k in allowed}
-        record = {"time": time.time(), "event": event, **safe}
+        record = {"time": self.clock(), "event": event, **safe}
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("a", encoding="utf-8") as file:
-                file.write(json.dumps(record, ensure_ascii=False) + "\n")
+            with file_lock(self.path.with_suffix(".lock")):
+                if self.path.exists() and self.path.stat().st_size >= self.max_bytes:
+                    rotated = self.path.with_name(
+                        f"{self.path.stem}.{int(self.clock())}.{uuid4().hex}.jsonl"
+                    )
+                    self.path.replace(rotated)
+                with self.path.open("a", encoding="utf-8") as file:
+                    file.write(json.dumps(record, ensure_ascii=False) + "\n")
             self.totals["events"] += 1
             if event == "http_request":
                 self.totals["requests"] += 1
             for key in ("input_tokens", "output_tokens", "tool_calls"):
                 self.totals[key] += float(safe.get(key, 0))
         logging.getLogger(__name__).info("agent_event", extra={"audit": record})
+
+    def _rewrite(self, subject_hash: str | None = None) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock, file_lock(self.path.with_suffix(".lock")):
+            # A killed rewrite can leave a duplicate containing still-retained events.
+            # The authoritative JSONL source remains until atomic replacement.
+            for stale in self.path.parent.glob(f"{self.path.stem}*.rewrite"):
+                stale.unlink(missing_ok=True)
+            paths = [self.path, *self.path.parent.glob(f"{self.path.stem}.*.jsonl")]
+            cutoff = self.clock() - self.retention_seconds if self.retention_seconds else None
+            for path in paths:
+                if not path.exists():
+                    continue
+                temporary = path.with_suffix(".rewrite")
+                kept = 0
+                try:
+                    with (
+                        path.open(encoding="utf-8") as source,
+                        temporary.open("w", encoding="utf-8") as output,
+                    ):
+                        for line in source:
+                            try:
+                                record = json.loads(line)
+                            except ValueError:
+                                # Malformed records cannot be proven safe or attributed.
+                                continue
+                            if subject_hash and record.get("subject_hash") == subject_hash:
+                                continue
+                            if cutoff is not None and record.get("time", 0) <= cutoff:
+                                continue
+                            output.write(json.dumps(record, ensure_ascii=False) + "\n")
+                            kept += 1
+                    temporary.replace(path)
+                    if not kept and path != self.path:
+                        path.unlink(missing_ok=True)
+                finally:
+                    temporary.unlink(missing_ok=True)
+
+    def purge_subject(self, subject_hash: str) -> None:
+        self._rewrite(subject_hash)
+
+    def maintain(self) -> None:
+        if self.retention_seconds is not None:
+            self._rewrite()
 
 
 def identity_hash(value: str) -> str:

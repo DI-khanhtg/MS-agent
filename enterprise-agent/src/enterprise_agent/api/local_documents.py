@@ -1,6 +1,5 @@
 """Bounded, authenticated folder imports for a local development instance."""
 
-import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
@@ -11,6 +10,7 @@ from enterprise_agent.security.identity import (
     reset_request_context,
     set_request_context,
 )
+from enterprise_agent.storage.locking import run_local
 from enterprise_agent.tools.local.documents import LocalDocumentError, LocalDocumentTools
 
 router = APIRouter(prefix="/api/local-documents", tags=["local documents"])
@@ -33,15 +33,15 @@ async def upload_documents(
             raise HTTPException(403, "Authenticated local document imports are disabled")
         if not files or len(files) > settings.local_max_files:
             raise HTTPException(422, "Import file count exceeds the configured limit")
-        byte_limit = min(settings.local_max_file_bytes, 2_000_000)
+        byte_limit = min(settings.local_max_file_bytes, settings.document_upload_max_bytes)
         batch = []
         for file in files:
             content = await file.read(byte_limit + 1)
             if len(content) > byte_limit:
                 raise HTTPException(413, "File exceeds the configured import size limit")
-            batch.append((file.filename or "", content))
+            batch.append((file.filename or "", content, file.content_type))
         local_tools: LocalDocumentTools = request.app.state.local_document_tools
-        return await asyncio.to_thread(local_tools.import_documents, batch)
+        return await run_local(local_tools.import_documents, batch)
     except LocalDocumentError as exc:
         raise HTTPException(422, str(exc)) from exc
     finally:

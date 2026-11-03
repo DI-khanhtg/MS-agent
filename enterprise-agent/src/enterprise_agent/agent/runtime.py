@@ -115,7 +115,9 @@ class MicrosoftAgentRuntime:
     def _ensure_initialized(self) -> None:
         if self._sessions is None:
             if self._injected_agent is not None:
-                self._sessions = InMemorySessionStore(self._injected_agent.create_session)
+                self._sessions = InMemorySessionStore(
+                    self._injected_agent.create_session, self.settings
+                )
                 return
             if not self.settings.gemini_is_configured:
                 raise AgentConfigurationError(
@@ -162,7 +164,7 @@ class MicrosoftAgentRuntime:
             self._sessions = (
                 PersistentSessionStore(self._database)
                 if self._database
-                else InMemorySessionStore(AgentSession)
+                else InMemorySessionStore(AgentSession, self.settings)
             )
 
     def _new_agent(self) -> Any:

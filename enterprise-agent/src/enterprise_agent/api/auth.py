@@ -68,7 +68,7 @@ async def browser_auth_configuration(request: Request) -> JSONResponse:
     return JSONResponse(result, headers={"Cache-Control": "no-store"})
 
 
-async def get_principal(request: Request, credentials: BearerCredentials) -> Principal:
+async def _verified_principal(request: Request, credentials: BearerCredentials) -> Principal:
     settings: Settings = request.app.state.settings
     if not settings.auth_enabled:
         principal = Principal.anonymous()
@@ -103,7 +103,16 @@ async def get_principal(request: Request, credentials: BearerCredentials) -> Pri
         ) from exc
 
 
-PrincipalDependency = Annotated[Principal, Depends(get_principal)]
+async def get_principal(request: Request, credentials: BearerCredentials):
+    principal = await _verified_principal(request, credentials)
+    try:
+        async with request.app.state.lifecycle.request(principal):
+            yield principal
+    except OSError:
+        raise HTTPException(503, "Local cleanup is pending; retry shortly") from None
+
+
+PrincipalDependency = Annotated[Principal, Depends(get_principal, scope="request")]
 
 
 async def _limit(request: Request, principal: Principal) -> None:

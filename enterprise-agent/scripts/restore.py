@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from enterprise_agent.config import Settings
 from enterprise_agent.storage.database import Database
+from enterprise_agent.storage.migrations import framework_owner
 
 
 def restore(settings: Settings, source: Path) -> None:
@@ -49,6 +50,14 @@ def restore(settings: Settings, source: Path) -> None:
             if metadata.get("schema_version") != 1:
                 raise ValueError("Unsupported backup schema")
             records = json.loads(archive.read("records.json"))
+            if isinstance(records, list):
+                for row in records:
+                    if isinstance(row, dict):
+                        row.setdefault("expires_at", None)
+                        if row.get("namespace") == "framework_sessions":
+                            owner = framework_owner(row.get("payload", "{}"))
+                            if owner:
+                                row["owner"] = owner
             columns = set(database.records.c.keys())
             if not isinstance(records, list) or any(
                 not isinstance(row, dict) or set(row) != columns for row in records

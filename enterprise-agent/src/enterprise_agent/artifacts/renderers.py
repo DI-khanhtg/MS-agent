@@ -5,6 +5,7 @@ import logging
 import subprocess
 import tempfile
 from abc import ABC, abstractmethod
+from contextvars import ContextVar
 from dataclasses import dataclass
 from html import escape
 from pathlib import Path
@@ -42,6 +43,7 @@ from enterprise_agent.artifacts.models import ArtifactFormat, ArtifactSpec
 from enterprise_agent.artifacts.templates import CompanyTemplate
 
 logger = logging.getLogger(__name__)
+render_scratch_root: ContextVar[Path | None] = ContextVar("render_scratch_root", default=None)
 
 
 class ArtifactRenderingError(RuntimeError):
@@ -168,7 +170,9 @@ class DocxRenderer(ArtifactRenderer):
                 document.add_paragraph(f"{source.label}: {source.reference}", style="List Bullet")
 
         self._add_footer(document)
-        with tempfile.TemporaryDirectory(prefix="enterprise-docx-") as directory:
+        with tempfile.TemporaryDirectory(
+            prefix="enterprise-docx-", dir=render_scratch_root.get()
+        ) as directory:
             output_path = Path(directory) / "artifact.docx"
             document.save(output_path)
             Document(output_path)
@@ -244,7 +248,9 @@ class DocxRenderer(ArtifactRenderer):
 class PdfRenderer(ArtifactRenderer):
     def render(self, spec: ArtifactSpec, template: CompanyTemplate) -> RenderedArtifact:
         font_name = _register_pdf_font()
-        with tempfile.TemporaryDirectory(prefix="enterprise-pdf-") as directory:
+        with tempfile.TemporaryDirectory(
+            prefix="enterprise-pdf-", dir=render_scratch_root.get()
+        ) as directory:
             output_path = Path(directory) / "artifact.pdf"
             document = BaseDocTemplate(
                 str(output_path),
@@ -370,7 +376,9 @@ class ArtifactToolRenderer(ArtifactRenderer):
                 "XLSX/PPTX rendering requires ARTIFACT_TOOL_NODE_MODULES "
                 "with @oai/artifact-tool 2.7.3+."
             )
-        with tempfile.TemporaryDirectory(prefix="enterprise-artifact-") as directory:
+        with tempfile.TemporaryDirectory(
+            prefix="enterprise-artifact-", dir=render_scratch_root.get()
+        ) as directory:
             build_dir = Path(directory)
             input_path = build_dir / "input.json"
             output_path = build_dir / f"output.{spec.artifact_type.value}"

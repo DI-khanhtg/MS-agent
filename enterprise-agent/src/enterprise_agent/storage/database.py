@@ -4,9 +4,11 @@ import hashlib
 import json
 from datetime import UTC, datetime
 
-from sqlalchemy import Column, Integer, MetaData, String, Table, Text, create_engine, select
+from sqlalchemy import Column, Integer, MetaData, String, Table, Text, create_engine, or_, select
 
 from enterprise_agent.config import PLACEHOLDER_VALUES, Settings
+from enterprise_agent.storage.migrations import migrate
+from enterprise_agent.storage.retention import RetentionPolicy
 
 
 class StorageConflict(RuntimeError):
@@ -15,6 +17,9 @@ class StorageConflict(RuntimeError):
 
 class Database:
     def __init__(self, settings: Settings) -> None:
+        self.settings = settings
+        self.clock = lambda: datetime.now(UTC)
+        self.retention = RetentionPolicy(settings)
         url = settings.database_url.get_secret_value()
         if url in PLACEHOLDER_VALUES:
             settings.database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -32,14 +37,33 @@ class Database:
             Column("version", Integer, nullable=False),
             Column("payload", Text, nullable=False),
             Column("updated_at", String(40), nullable=False),
+            Column("expires_at", String(40), nullable=True),
         )
-        metadata.create_all(self.engine)
+        self.cleanup_jobs = Table(
+            "agent_cleanup_jobs",
+            metadata,
+            Column("owner", String(64), primary_key=True),
+            Column("payload", Text, nullable=False),
+        )
+        migrate(self.engine, metadata)
+
+    def live(self):
+        if not self.settings.retention_enabled:
+            from sqlalchemy import true
+
+            return true()
+        return or_(
+            self.records.c.expires_at.is_(None),
+            self.records.c.expires_at > self.clock().isoformat(),
+        )
 
     @staticmethod
     def key(value: str) -> str:
         return hashlib.sha256(value.encode()).hexdigest()
 
-    def get(self, namespace: str, key: str, owner: str) -> tuple[dict, int] | None:
+    def get(
+        self, namespace: str, key: str, owner: str, *, include_expired: bool = False
+    ) -> tuple[dict, int] | None:
         with self.engine.connect() as conn:
             row = (
                 conn.execute(
@@ -47,6 +71,7 @@ class Database:
                         self.records.c.namespace == namespace,
                         self.records.c.key == self.key(key),
                         self.records.c.owner == self.key(owner),
+                        self.live() if not include_expired else True,
                     )
                 )
                 .mappings()
@@ -65,6 +90,8 @@ class Database:
                 from sqlalchemy.exc import IntegrityError
 
                 try:
+                    expiry = self.retention.expiry(namespace, self.clock())
+                    values["expires_at"] = expiry.isoformat() if expiry else None
                     conn.execute(
                         self.records.insert().values(
                             namespace=namespace, key=self.key(key), owner=self.key(owner), **values
@@ -94,6 +121,7 @@ class Database:
                 .where(
                     self.records.c.namespace == namespace,
                     self.records.c.owner == self.key(owner),
+                    self.live(),
                 )
                 .order_by(self.records.c.updated_at.desc())
             ).all()

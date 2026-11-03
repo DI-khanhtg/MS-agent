@@ -25,11 +25,33 @@ Người dùng dịch vụ chung không cần cài Python hoặc cung cấp API 
 
 Xem [kiến trúc ứng dụng](ARCHITECTURE.md) để biết các thành phần và luồng xử lý.
 
+## Data lifecycle management (F3)
+
+Authenticated users can erase their local account data with `DELETE /api/me/data`; identity
+comes exclusively from the verified Entra principal. The operation is idempotent and never
+deletes source data in Microsoft 365. Cleanup resumes after partial failures and runs through
+FastAPI lifespan. Configurable conversation/session/artifact/upload TTLs remain disabled
+until an approved B5 policy reference and explicit durations are configured.
+
+See [data lifecycle operations](docs/data-lifecycle.md) for migration, configuration, audit
+rotation/retention, worker coordination, supported encryption, backup limitations and tests.
+
 ## Dữ liệu và giới hạn
+
+### Advanced document processing (F5)
+
+The existing reader supports DOC/PPT/XLS/RTF/ODT through isolated LibreOffice conversion and
+EML/MSG email extraction when a verified Linux document sandbox is enabled. New formats
+fail closed without it; native PDF/DOCX/PPTX/XLSX/UTF-8 flows remain compatible. Format and
+resource limits are configurable, macro-enabled documents are rejected, and extracted body
+text/headers remain untrusted data subject to the existing privacy and egress policy.
+
+See the [support matrix and deployment guide](docs/advanced-documents.md) for the dedicated
+worker image, runtime/kernel verification, fixture accuracy and offline/opt-in test commands.
 
 - Microsoft 365 được đọc theo quyền người đăng nhập; ứng dụng không tự cấp quyền vào tài liệu người khác.
 - Tìm tài liệu cá nhân/được chia sẻ qua chỉ mục OneDrive/SharePoint cần Work IQ `retrieve` và điều kiện Copilot Credits của tenant. Mỗi lượt chat tối đa hai truy vấn tìm kiếm; chỉ mục không bảo đảm bao phủ mọi file.
-- Hỗ trợ TXT/MD/CSV/JSON UTF-8, DOCX, PPTX, PDF có chữ và XLSX. Chưa có OCR cho PDF scan; định dạng `.doc`, `.ppt`, `.xls` cần chuyển đổi.
+- Native support: UTF-8 TXT/MD/CSV/JSON, DOCX, PPTX, selectable PDF and XLSX. Advanced DOC/PPT/XLS/RTF/ODT/MSG/EML support requires the verified document sandbox. Scanned PDFs still require OCR, which is not provided.
 - Link thư mục SharePoint/OneDrive được liệt kê đệ quy (mặc định 3 cấp, tối đa 5; tối đa 200 mục và 40 thư mục con mỗi lượt), rồi đọc nội dung các file được chọn, mỗi lượt gọi tối đa 6 file. Có Graph `Files.Read` thì liệt kê đầy đủ thư mục lớn; nếu không, chỉ 25 mục đầu mỗi thư mục và agent sẽ báo là chưa đủ.
 - Upload qua trình duyệt tối đa 2 MB/tệp; PDF tối đa 200 trang, PPTX tối đa 200 slide. File qua link trên 4 MB dùng Graph riêng, với giới hạn ứng dụng 20 MB.
 - Lịch sử, phiên và artifact nằm trên máy chạy backend, tách theo tenant/tài khoản. Upload tạo bản sao trên backend; đăng xuất không xóa dữ liệu đã lưu.

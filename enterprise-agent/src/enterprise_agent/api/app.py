@@ -1,7 +1,9 @@
 """FastAPI application factory."""
 
+import asyncio
 import logging
 import time
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -24,6 +26,7 @@ from enterprise_agent.api.artifacts import router as artifacts_router
 from enterprise_agent.api.auth import PrincipalDependency
 from enterprise_agent.api.auth import router as auth_router
 from enterprise_agent.api.chat import router as chat_router
+from enterprise_agent.api.data import router as data_router
 from enterprise_agent.api.limits import BodyLimitMiddleware
 from enterprise_agent.api.local_documents import router as local_documents_router
 from enterprise_agent.api.schemas import HealthResponse
@@ -40,10 +43,12 @@ from enterprise_agent.security.egress import EgressGate
 from enterprise_agent.security.token_validation import EntraTokenValidator, TokenValidator
 from enterprise_agent.storage.conversations import ConversationStore
 from enterprise_agent.storage.database import Database
+from enterprise_agent.storage.lifecycle import DataLifecycle
+from enterprise_agent.storage.locking import FileLock
 from enterprise_agent.subagents.tools import SubAgentTools
 from enterprise_agent.telemetry.operations import AuditLog, RateLimiter, audit_sink
 from enterprise_agent.telemetry.tracing import configure_tracing, request_span
-from enterprise_agent.tools.document_reader import SUPPORTED
+from enterprise_agent.tools.document_formats import enabled_formats
 from enterprise_agent.tools.fabric.auth import MsalFabricOnBehalfOfTokenProvider
 from enterprise_agent.tools.fabric.client import FabricDataAgentClient
 from enterprise_agent.tools.fabric.tools import FabricReadTools
@@ -90,16 +95,46 @@ def create_app(
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
+    @asynccontextmanager
+    async def lifespan(app):
+        memory_lock = None
+        if app_settings.storage_backend == "memory":
+            memory_lock = FileLock(app.state.lifecycle._lock_root / "memory-process.lock")
+            if not memory_lock.acquire(blocking=False):
+                memory_lock.close()
+                raise RuntimeError("Memory storage supports one API process; use database storage")
+        cleanup = asyncio.create_task(app.state.lifecycle.run())
+        try:
+            yield
+        finally:
+            cleanup.cancel()
+            with suppress(asyncio.CancelledError):
+                await cleanup
+            app.state.lifecycle.database.engine.dispose()
+            if app.state.lifecycle.lock_engine:
+                app.state.lifecycle.lock_engine.dispose()
+            if memory_lock:
+                memory_lock.close()
+
     application = FastAPI(
         title="Enterprise Agent API",
         version="0.3.0",
         description="Gemini enterprise agent with governed data, artifacts, and actions",
+        lifespan=lifespan,
     )
     application.state.settings = app_settings
     database = Database(app_settings) if app_settings.storage_backend == "database" else None
     application.state.database = database
-    application.state.conversations = ConversationStore(database, app_settings.max_history_messages)
-    application.state.audit = AuditLog(app_settings.audit_log_path)
+    application.state.conversations = ConversationStore(
+        database, app_settings.max_history_messages, settings=app_settings
+    )
+    application.state.audit = AuditLog(
+        app_settings.audit_log_path,
+        max_bytes=app_settings.audit_max_bytes,
+        retention_seconds=app_settings.audit_retention_seconds,
+    )
+    lifecycle = DataLifecycle(application)
+    application.state.lifecycle = lifecycle
     configure_tracing(app_settings.telemetry_enabled)
     application.state.limiter = RateLimiter(app_settings.rate_limit_per_minute)
     application.state.shared_request_limiter = RateLimiter(app_settings.shared_requests_per_minute)
@@ -121,6 +156,14 @@ def create_app(
     application.state.token_validator = token_validator or EntraTokenValidator(app_settings)
     workiq_client = WorkIQMCPClient(app_settings)
     workiq_token_provider = MsalOnBehalfOfTokenProvider(app_settings)
+    graph_token_provider = MsalGraphFileTokenProvider(app_settings)
+    fabric_token_provider = MsalFabricOnBehalfOfTokenProvider(app_settings)
+    application.state.token_providers = [
+        workiq_token_provider,
+        graph_token_provider,
+        fabric_token_provider,
+    ]
+    local_tools.database = lifecycle.database
     approval_policy = ApprovalPolicy.from_yaml(app_settings.approval_policy_path)
     approval_service = ApprovalService(
         DurableApprovalStore(approval_policy.expiry_minutes, database)
@@ -137,7 +180,7 @@ def create_app(
     )
     application.state.approval_service = approval_service
     artifact_service = ArtifactService(
-        ArtifactStore(app_settings.artifact_storage_path),
+        ArtifactStore(app_settings.artifact_storage_path, database=lifecycle.database),
         TemplateCatalog.from_yaml(
             app_settings.artifact_template_config_path,
             app_settings.artifact_template_root,
@@ -155,11 +198,12 @@ def create_app(
             workiq_client,
             workiq_token_provider,
             egress_gate,
-            graph_token_provider=MsalGraphFileTokenProvider(app_settings),
+            graph_token_provider=graph_token_provider,
+            settings=app_settings,
         )
         fabric_tools = FabricReadTools(
             FabricDataAgentClient(app_settings),
-            MsalFabricOnBehalfOfTokenProvider(app_settings),
+            fabric_token_provider,
             egress_gate,
         )
         runtime = MicrosoftAgentRuntime(
@@ -190,6 +234,7 @@ def create_app(
     application.include_router(sessions_router)
     application.include_router(voice_router)
     application.include_router(local_documents_router)
+    application.include_router(data_router)
     static_root = Path(__file__).resolve().parents[1] / "ui"
     application.mount("/static", StaticFiles(directory=static_root), name="static")
 
@@ -280,7 +325,9 @@ def create_app(
             "foundry_iq_configured": app_settings.foundry_iq_is_configured,
             "tool_groups": sorted(app_settings.tool_groups),
             "artifact_formats": ["docx", "pdf", "xlsx", "pptx", "markdown", "json"],
-            "document_extensions": sorted(SUPPORTED),
+            "document_extensions": sorted(enabled_formats(app_settings)),
+            "document_upload_max_bytes": app_settings.document_upload_max_bytes,
+            "document_sandbox_enabled": app_settings.document_sandbox_enabled,
             "deployment_mode": app_settings.deployment_mode,
             "document_uploads_enabled": (
                 app_settings.auth_enabled

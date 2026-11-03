@@ -3,11 +3,13 @@
 import hashlib
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from uuid import UUID, uuid4
 
 from enterprise_agent.artifacts.models import ArtifactFormat, ArtifactRecord, StoredArtifact
 from enterprise_agent.security.identity import Principal
+from enterprise_agent.storage.database import Database
 
 
 class ArtifactNotFoundError(FileNotFoundError):
@@ -15,9 +17,31 @@ class ArtifactNotFoundError(FileNotFoundError):
 
 
 class ArtifactStore:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, database: Database | None = None) -> None:
+        self.database = database
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
+
+    @contextmanager
+    def workspace(self, principal: Principal):
+        """Register renderer scratch copies under the owner before creating files."""
+        from enterprise_agent.storage.lifecycle import remove_path
+
+        tenant_key, user_key = _owner_keys(principal)
+        identifier = "scratch-" + uuid4().hex
+        relative = f"{tenant_key}/{user_key}/_scratch/{identifier}"
+        if self.database:
+            self.database.put(
+                "artifacts", identifier, principal.isolation_key, {"path": relative}, 0
+            )
+        path = self.root / relative
+        try:
+            path.mkdir(parents=True)
+            yield path
+        finally:
+            remove_path(self.root, relative)
+            if self.database:
+                self.database.delete("artifacts", identifier, principal.isolation_key)
 
     def save(
         self,
@@ -32,6 +56,16 @@ class ArtifactStore:
         artifact_id = str(uuid4())
         tenant_key, user_key = _owner_keys(principal)
         directory = self.root / tenant_key / user_key / artifact_id
+        expiry = None
+        if self.database:
+            expiry = self.database.retention.expiry("artifacts", self.database.clock())
+            self.database.put(
+                "artifacts",
+                artifact_id,
+                principal.isolation_key,
+                {"path": f"{tenant_key}/{user_key}/{artifact_id}"},
+                0,
+            )
         directory.mkdir(parents=True, exist_ok=False)
         filename = f"{_safe_filename(title)}.{extension}"
         artifact_path = directory / filename
@@ -45,6 +79,7 @@ class ArtifactStore:
             media_type=media_type,
             size_bytes=len(content),
             download_url=f"/api/artifacts/{artifact_id}/download",
+            expires_at=expiry,
         )
         stored = StoredArtifact(
             record=record,
@@ -63,6 +98,13 @@ class ArtifactStore:
         if not manifest_path.is_file():
             raise ArtifactNotFoundError(artifact_id)
         stored = StoredArtifact.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+        if (
+            self.database
+            and self.database.settings.retention_enabled
+            and stored.record.expires_at
+            and stored.record.expires_at <= self.database.clock()
+        ):
+            raise ArtifactNotFoundError(artifact_id)
         if stored.tenant_key != tenant_key or stored.user_key != user_key:
             raise ArtifactNotFoundError(artifact_id)
         artifact_path = directory / stored.record.filename
@@ -86,6 +128,13 @@ class ArtifactStore:
             except (OSError, ValueError, json.JSONDecodeError):
                 continue
             if stored.tenant_key == tenant_key and stored.user_key == user_key:
+                if (
+                    self.database
+                    and self.database.settings.retention_enabled
+                    and stored.record.expires_at
+                    and stored.record.expires_at <= self.database.clock()
+                ):
+                    continue
                 records.append(stored.record)
         return sorted(records, key=lambda item: item.created_at, reverse=True)
 
@@ -111,4 +160,3 @@ def _atomic_write(path: Path, content: bytes) -> None:
         stream.flush()
         os.fsync(stream.fileno())
     temporary.replace(path)
-

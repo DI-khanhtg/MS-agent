@@ -17,6 +17,9 @@ build/
 data/artifacts/
 data/*.db*
 data/*.jsonl*
+data/*.lock
+data/*.rewrite
+data/.lifecycle-locks/
 data/*.png
 coverage.xml
 data/backups/

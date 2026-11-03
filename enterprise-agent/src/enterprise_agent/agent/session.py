@@ -4,11 +4,16 @@ import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from agent_framework import AgentSession
 
+from enterprise_agent.config import Settings
 from enterprise_agent.storage.database import Database
+from enterprise_agent.storage.lifecycle import session_owner
+from enterprise_agent.storage.locking import run_local
+from enterprise_agent.storage.retention import RetentionPolicy
 
 
 @dataclass(slots=True)
@@ -16,6 +21,7 @@ class SessionEntry:
     session: Any
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     pending_save: asyncio.Task[None] | None = field(default=None, repr=False)
+    expires_at: datetime | None = None
 
     async def wait_for_save(self, *, propagate_error: bool = True) -> None:
         """A cancelled request must not cancel or race a database commit in a thread."""
@@ -34,19 +40,31 @@ class SessionEntry:
 class InMemorySessionStore:
     """Keep sessions isolated by ID; replace with persistent storage after the MVP."""
 
-    def __init__(self, session_factory: Callable[..., Any]) -> None:
+    def __init__(
+        self, session_factory: Callable[..., Any], settings: Settings | None = None
+    ) -> None:
         self._session_factory = session_factory
+        self.retention = RetentionPolicy(settings) if settings else None
+        self.clock = lambda: datetime.now(UTC)
         self._sessions: dict[str, SessionEntry] = {}
         self._store_lock = asyncio.Lock()
 
     async def get_or_create(self, session_id: str) -> SessionEntry:
         entry = self._sessions.get(session_id)
+        if entry and entry.expires_at and entry.expires_at <= self.clock():
+            await self.delete(session_id)
+            entry = None
         if entry is not None:
             return entry
         async with self._store_lock:
             entry = self._sessions.get(session_id)
             if entry is None:
-                entry = SessionEntry(self._session_factory(session_id=session_id))
+                entry = SessionEntry(
+                    self._session_factory(session_id=session_id),
+                    expires_at=self.retention.expiry("framework_sessions", self.clock())
+                    if self.retention
+                    else None,
+                )
                 self._sessions[session_id] = entry
             return entry
 
@@ -86,15 +104,15 @@ class PersistentSessionStore(InMemorySessionStore):
     """Persist Agent Framework state. Run one worker per local/pilot instance."""
 
     def __init__(self, database: Database) -> None:
-        super().__init__(AgentSession)
+        super().__init__(AgentSession, database.settings)
         self.database = database
         self.versions: dict[str, int] = {}
 
     async def get_or_create(self, session_id: str) -> SessionEntry:
         async with self._store_lock:
             if session_id not in self._sessions:
-                saved = await asyncio.to_thread(
-                    self.database.get, "framework_sessions", session_id, "runtime"
+                saved = await run_local(
+                    self.database.get, "framework_sessions", session_id, session_owner(session_id)
                 )
                 self.versions[session_id] = saved[1] if saved else 0
                 session = (
@@ -110,11 +128,11 @@ class PersistentSessionStore(InMemorySessionStore):
         await entry.wait_for_save()
 
         async def persist() -> None:
-            version = await asyncio.to_thread(
+            version = await run_local(
                 self.database.put,
                 "framework_sessions",
                 session_id,
-                "runtime",
+                session_owner(session_id),
                 entry.session.to_dict(),
                 self.versions[session_id],
             )
@@ -130,8 +148,8 @@ class PersistentSessionStore(InMemorySessionStore):
 
     async def delete(self, session_id: str) -> bool:
         async def remove() -> bool:
-            removed = await asyncio.to_thread(
-                self.database.delete, "framework_sessions", session_id, "runtime"
+            removed = await run_local(
+                self.database.delete, "framework_sessions", session_id, session_owner(session_id)
             )
             self._sessions.pop(session_id, None)
             self.versions.pop(session_id, None)

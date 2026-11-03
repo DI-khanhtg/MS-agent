@@ -18,6 +18,13 @@ class WorkIQTokenProvider(Protocol):
     async def get_token(self, principal: Principal) -> str: ...
 
 
+class RequestOnlyTokenCache(msal.TokenCache):
+    """Keep delegated credentials within the OBO call, never on the shared provider."""
+
+    def add(self, event, **kwargs):
+        return None
+
+
 class MsalOnBehalfOfTokenProvider:
     """Exchange a verified incoming user token for a Work IQ delegated token."""
 
@@ -44,6 +51,7 @@ class MsalOnBehalfOfTokenProvider:
                     client_id=self.settings.azure_client_id,
                     client_credential=self.settings.azure_client_secret.get_secret_value(),
                     authority=(f"https://login.microsoftonline.com/{principal.tenant_id}"),
+                    token_cache=RequestOnlyTokenCache(),
                 )
                 self._applications[principal.tenant_id] = application
                 while len(self._applications) > 512:
@@ -63,6 +71,10 @@ class MsalOnBehalfOfTokenProvider:
                 f"Work IQ token exchange failed ({error}; correlation_id={correlation_id})"
             )
         return access_token
+
+    def evict_owner(self, owner_hash: str) -> None:
+        # Application instances retain tenant configuration only; token caching is disabled.
+        pass
 
 
 class MsalGraphFileTokenProvider(MsalOnBehalfOfTokenProvider):
